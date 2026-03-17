@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Logs
+*.log*
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets
+.env
+
+# TribeWatch runtime artifacts
+tribewatch.toml
+tribewatch_client.toml
+unknown_events.log
+debug/
+tribewatch_events.db
+tribewatch_tribe.db
+tribewatch_state*.json
+tribewatch_calibration_preview.png
+parasaur_calibration_preview.png
+tribe_calibration_preview.png
+tribewatch_generators.db
+tribewatch_todo.db
+tribewatch_calendar.db
+*.db
+*.db-shm
+*.db-wal
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Claude Code
+.claude/
