@@ -2,7 +2,7 @@
 ; Builds a Windows installer from PyInstaller output
 
 #define MyAppName "TribeWatch"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion Trim(FileRead(FileOpen("VERSION")))
 #define MyAppPublisher "TribeWatch"
 #define MyAppURL "https://github.com/frankthetank001/tribewatch-client"
 #define MyAppExeName "TribeWatch.exe"
@@ -19,6 +19,7 @@ DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=dist
 OutputBaseFilename=TribeWatch-Setup
+SetupIconFile=tribewatch.ico
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -35,14 +36,15 @@ Name: "startupentry"; Description: "Start TribeWatch when Windows starts"; Group
 
 [Files]
 Source: "dist\TribeWatch\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "tribewatch.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\tribewatch.ico"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\tribewatch.ico"; Tasks: desktopicon
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "TribeWatch"; ValueData: """{app}\{#MyAppExeName}"" --run"; Flags: uninsdeletevalue; Tasks: startupentry
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall

@@ -97,7 +97,7 @@ async def download_and_run_installer(download_url: str) -> bool:
 
         log.info("Launching installer: %s", installer_path)
         subprocess.Popen(
-            [installer_path, "/SILENT", "/CLOSEAPPLICATIONS"],
+            [installer_path, "/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"],
             creationflags=subprocess.DETACHED_PROCESS,
         )
         return True

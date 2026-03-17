@@ -1,8 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for TribeWatch client (no server/standalone)."""
 
-import os, importlib
+import os, importlib, re
 block_cipher = None
+
+# Read version from tribewatch/__init__.py (single source of truth)
+_version_match = re.search(
+    r'__version__\s*=\s*["\']([^"\']+)["\']',
+    open('tribewatch/__init__.py').read(),
+)
+_version = _version_match.group(1) if _version_match else '0.0.0'
+
+# Write VERSION file for Inno Setup to read
+with open('VERSION', 'w') as _vf:
+    _vf.write(_version)
 
 # Locate rapidocr_onnxruntime package directory for data files
 _rapidocr_dir = os.path.dirname(importlib.import_module('rapidocr_onnxruntime').__file__)
@@ -60,7 +71,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=True,
-    icon=None,  # TODO: add icon
+    icon='tribewatch.ico',
     version_info=None,
 )
 
