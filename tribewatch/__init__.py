@@ -1,3 +1,3 @@
 """TribeWatch — ARK: Survival Ascended tribe log monitor."""
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
