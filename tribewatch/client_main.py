@@ -124,6 +124,19 @@ def main() -> None:
     _apply_env_overrides(cfg)
     _setup_logging(cfg.general.log_level)
 
+    # Prompt for server URL if not set (first launch)
+    if not cfg.server.server_url:
+        from tribewatch.config import save_config
+        print("\n  Welcome to TribeWatch!\n")
+        url = input("  Enter your TribeWatch server URL: ").strip()
+        if not url:
+            print("  No server URL provided. Exiting.")
+            input("  Press Enter to close...")
+            return
+        cfg.server.server_url = url
+        save_config(cfg, effective_path, mode="client")
+        print(f"  Server URL saved to {effective_path}\n")
+
     # Auto-update check (frozen builds only)
     if is_frozen():
         _check_for_updates()
@@ -143,4 +156,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        print(f"\n  ERROR: {e}")
+        traceback.print_exc()
+        input("\n  Press Enter to close...")
