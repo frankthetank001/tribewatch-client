@@ -81,12 +81,6 @@ def _cmd_generate_config(config_path: Path, mode: str = "client") -> None:
     cfg.server.mode = mode
     save_config(cfg, config_path, mode=mode)
     print(f"Generated {mode} config at: {config_path}")
-    print()
-    print("Next steps:")
-    print(f"  1. Edit {config_path} — fill in your server URL and settings")
-    print(f"  2. Run: python -m tribewatch --calibrate  (to set screen region)")
-    print(f"  3. Run: python -m tribewatch --test-ocr   (to verify OCR)")
-    print(f"  4. Run: python -m tribewatch              (to start monitoring)")
 
 
 def _focus_game_window(config_path: Path) -> None:
