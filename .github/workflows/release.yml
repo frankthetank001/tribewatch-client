@@ -30,6 +30,11 @@ jobs:
         shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Stamp version from tag into __init__.py
+        shell: bash
+        run: |
+          sed -i "s/__version__ = .*/__version__ = \"${{ steps.version.outputs.version }}\"/" tribewatch/__init__.py
+
       - name: Install Inno Setup
         shell: pwsh
         run: |
