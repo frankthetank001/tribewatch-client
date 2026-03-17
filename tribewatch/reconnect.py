@@ -22,6 +22,10 @@ log = logging.getLogger(__name__)
 # Steam app ID for ARK: Survival Ascended
 _ARK_APP_ID = "2399830"
 
+# Epic Games launch URI — catalog namespace:item:artifact for ARK SA
+# Fallback: find and launch the exe directly via _get_epic_install_paths()
+_EPIC_LAUNCH_URI = "com.epicgames.launcher://apps/ark%3A343af302390741e0b69c4b16e580de9b%3ADroppedIcicle?action=launch&silent=true"
+
 # Timeouts (seconds)
 _LAUNCH_TIMEOUT = 180  # 3 min to detect game window
 _TITLE_TIMEOUT = 180   # 3 min to find title screen text
@@ -68,6 +72,11 @@ class ReconnectSequence:
         self._use_browser = use_browser
         self._task: asyncio.Task | None = None
         self._succeeded: bool = False
+
+        # Detect launcher (steam / epic)
+        from tribewatch.server_id import detect_launcher
+        self._launcher = detect_launcher() or "steam"
+        log.info("Detected launcher: %s", self._launcher)
 
     @property
     def running(self) -> bool:
@@ -155,7 +164,7 @@ class ReconnectSequence:
                 await asyncio.sleep(_KILL_STEAM_DELAY)
                 return
 
-        log.warning("ARK process still present after %ds, attempting another kill", _KILL_TIMEOUT)
+        log.warning("ARK process still present after %ds, attempting another kill", int(_KILL_TIMEOUT))
         for exe in _ARK_EXES:
             try:
                 subprocess.run(
@@ -165,6 +174,33 @@ class ReconnectSequence:
             except Exception:
                 pass
         await asyncio.sleep(_KILL_STEAM_DELAY + 2)
+
+    def _launch_game(self) -> None:
+        """Launch ARK via the detected launcher (Steam or Epic)."""
+        if self._launcher == "epic":
+            log.info("Launching game via Epic Games...")
+            # Try Epic launcher URI first
+            try:
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "", _EPIC_LAUNCH_URI],
+                    shell=False,
+                )
+            except Exception:
+                # Fallback: try launching the exe directly
+                log.warning("Epic launcher URI failed, trying direct exe launch")
+                from tribewatch.server_id import _get_epic_install_paths
+                for epic_path in _get_epic_install_paths():
+                    exe = epic_path / "ShooterGame" / "Binaries" / "Win64" / "ArkAscended.exe"
+                    if exe.exists():
+                        subprocess.Popen([str(exe)], cwd=str(exe.parent))
+                        return
+                log.error("Could not find ARK exe in Epic install paths")
+        else:
+            log.info("Launching game via Steam...")
+            subprocess.Popen(
+                ["cmd", "/c", "start", f"steam://run/{_ARK_APP_ID}"],
+                shell=False,
+            )
 
     @staticmethod
     def _is_ark_running(exe_names: tuple[str, ...]) -> bool:
@@ -375,11 +411,9 @@ class ReconnectSequence:
         await self._kill_game()
 
         # --- Stage 1: Launch game ---
-        await self._report("launching", "Launching game via Steam...")
-        subprocess.Popen(
-            ["cmd", "/c", "start", f"steam://run/{_ARK_APP_ID}"],
-            shell=False,
-        )
+        launcher_name = "Epic Games" if self._launcher == "epic" else "Steam"
+        await self._report("launching", f"Launching game via {launcher_name}...")
+        self._launch_game()
 
         # Poll for game window
         hwnd = None
@@ -511,11 +545,9 @@ class ReconnectSequence:
         await self._report("closing_game", "Closing game...")
         await self._kill_game()
 
-        await self._report("launching", "Launching game via Steam...")
-        subprocess.Popen(
-            ["cmd", "/c", "start", f"steam://run/{_ARK_APP_ID}"],
-            shell=False,
-        )
+        launcher_name = "Epic Games" if self._launcher == "epic" else "Steam"
+        await self._report("launching", f"Launching game via {launcher_name}...")
+        self._launch_game()
 
         # Poll for game window
         hwnd = None

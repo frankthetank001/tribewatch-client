@@ -1,12 +1,21 @@
-"""Shared server ID / server name / resolution extraction from GameUserSettings.ini."""
+"""Shared server ID / server name / resolution extraction from GameUserSettings.ini.
+
+Supports both Steam and Epic Games Store installations.
+"""
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# --- Launcher detection ---
+
+_LAUNCHER_STEAM = "steam"
+_LAUNCHER_EPIC = "epic"
 
 
 def get_steam_library_paths() -> list[Path]:
@@ -32,8 +41,53 @@ def get_steam_library_paths() -> list[Path]:
     return paths
 
 
-def _find_game_user_settings() -> Path | None:
-    """Find the GameUserSettings.ini file across Steam library paths."""
+def _get_epic_install_paths() -> list[Path]:
+    """Return possible Epic Games ARK install paths."""
+    paths: list[Path] = []
+
+    # Default Epic Games install location
+    default = Path("C:/Program Files/Epic Games/ARKSurvivalAscended")
+    if default.exists():
+        paths.append(default)
+
+    # Check other drives for Epic Games folder
+    for drive in "DEFGH":
+        p = Path(f"{drive}:/Epic Games/ARKSurvivalAscended")
+        if p.exists() and p not in paths:
+            paths.append(p)
+        p = Path(f"{drive}:/Program Files/Epic Games/ARKSurvivalAscended")
+        if p.exists() and p not in paths:
+            paths.append(p)
+
+    # Check Epic's manifest files for custom install paths
+    manifests_dir = Path(os.environ.get("PROGRAMDATA", "C:/ProgramData")) / "Epic" / "EpicGamesLauncher" / "Data" / "Manifests"
+    if manifests_dir.exists():
+        try:
+            import json
+            for manifest in manifests_dir.glob("*.item"):
+                try:
+                    data = json.loads(manifest.read_text(encoding="utf-8"))
+                    install_loc = data.get("InstallLocation", "")
+                    app_name = data.get("AppName", "")
+                    # ARK SA catalog item / app name
+                    if install_loc and ("ark" in app_name.lower() or "ark" in install_loc.lower()):
+                        p = Path(install_loc)
+                        if p.exists() and p not in paths:
+                            paths.append(p)
+                except Exception:
+                    continue
+        except Exception:
+            log.debug("Failed to read Epic manifests", exc_info=True)
+
+    return paths
+
+
+def _find_game_user_settings() -> tuple[Path | None, str]:
+    """Find the GameUserSettings.ini file across Steam and Epic install paths.
+
+    Returns (path, launcher) where launcher is "steam", "epic", or "" if not found.
+    """
+    # Check Steam first
     for lib_path in get_steam_library_paths():
         ini = (
             lib_path
@@ -47,13 +101,36 @@ def _find_game_user_settings() -> Path | None:
             / "GameUserSettings.ini"
         )
         if ini.exists():
-            return ini
-    return None
+            return ini, _LAUNCHER_STEAM
+
+    # Check Epic
+    for epic_path in _get_epic_install_paths():
+        ini = (
+            epic_path
+            / "ShooterGame"
+            / "Saved"
+            / "Config"
+            / "Windows"
+            / "GameUserSettings.ini"
+        )
+        if ini.exists():
+            return ini, _LAUNCHER_EPIC
+
+    return None, ""
+
+
+def detect_launcher() -> str:
+    """Detect which launcher ARK is installed through.
+
+    Returns "steam", "epic", or "" if not detected.
+    """
+    _, launcher = _find_game_user_settings()
+    return launcher
 
 
 def _read_game_user_settings() -> str | None:
     """Read and return the contents of GameUserSettings.ini, or None."""
-    ini = _find_game_user_settings()
+    ini, _ = _find_game_user_settings()
     if ini is None:
         return None
     try:
