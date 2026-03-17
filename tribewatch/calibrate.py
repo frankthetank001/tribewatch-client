@@ -10,9 +10,14 @@ from __future__ import annotations
 
 import ctypes
 import logging
-import tkinter as tk
-from tkinter import messagebox
 from typing import Any, Optional
+
+try:
+    import tkinter as tk
+    from tkinter import messagebox
+except ImportError:
+    tk = None  # type: ignore[assignment]
+    messagebox = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
 

@@ -97,28 +97,29 @@ async def obtain_client_token_interactive(
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    try:
-        login_url = f"{url}/api/v1/auth/client-login?port={local_port}"
-        log.info("Opening browser for Discord OAuth: %s", login_url)
-        webbrowser.open(login_url)
+    login_url = f"{url}/api/v1/auth/client-login?port={local_port}"
+    log.info("Opening browser for Discord OAuth: %s", login_url)
+    webbrowser.open(login_url)
 
-        print("\nOpening browser for Discord authentication...")
-        print("Waiting for authorization...")
+    print("\nOpening browser for Discord authentication...")
+    print("Waiting for authorization...")
 
-        # Wait for the callback
-        got_token = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: event.wait(timeout),
-        )
+    # Wait for the callback
+    got_token = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: event.wait(timeout),
+    )
 
-        if got_token and _TokenHandler.token:
-            log.info("Client token received automatically")
-            return _TokenHandler.token
+    if got_token and _TokenHandler.token:
+        token = _TokenHandler.token
+        log.info("Client token received (len=%d)", len(token))
+        # Shut down server in a background thread to avoid blocking the event loop
+        threading.Thread(target=server.shutdown, daemon=True).start()
+        return token
 
-        # Timeout — fall back to manual paste
-        log.warning("Automatic token capture timed out, falling back to manual paste")
-        return await _fallback_paste_prompt(url)
-    finally:
-        server.shutdown()
+    # Timeout — fall back to manual paste
+    log.warning("Automatic token capture timed out, falling back to manual paste")
+    threading.Thread(target=server.shutdown, daemon=True).start()
+    return await _fallback_paste_prompt(url)
 
 
 async def _fallback_paste_prompt(server_url: str) -> str:

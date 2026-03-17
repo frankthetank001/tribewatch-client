@@ -119,7 +119,6 @@ def main() -> None:
     effective_path = client_config_path(config_path)
     if not effective_path.exists():
         _cmd_generate_config(effective_path, mode="client")
-        return
 
     cfg = load_config(effective_path)
     _apply_env_overrides(cfg)
