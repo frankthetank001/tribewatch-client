@@ -1,13 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for TribeWatch client (no server/standalone)."""
 
+import os, importlib
 block_cipher = None
+
+# Locate rapidocr_onnxruntime package directory for data files
+_rapidocr_dir = os.path.dirname(importlib.import_module('rapidocr_onnxruntime').__file__)
 
 a = Analysis(
     ['tribewatch/client_main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        (os.path.join(_rapidocr_dir, 'config.yaml'), 'rapidocr_onnxruntime'),
+        (os.path.join(_rapidocr_dir, 'models'), 'rapidocr_onnxruntime/models'),
+    ],
     hiddenimports=[
         'tribewatch.eos',
         'tribewatch.updater',
