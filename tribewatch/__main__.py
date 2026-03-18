@@ -939,6 +939,9 @@ async def _handle_server_change(
         if accepted:
             app._server_id = new_id
             app._server_name = new_name
+            # Clear stale tribe info so no events dispatch with old tribe name.
+            # _tribe_cycle will re-populate once the new tribe is detected.
+            app._tribe_info = None
             app._paused = False
             log.info("Server change accepted — monitoring resumed (server_id=%s)", new_id)
         else:

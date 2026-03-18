@@ -937,11 +937,14 @@ class TribeWatchApp:
                      len(events), dedup._high_water[0], dedup._high_water[1])
             return
 
-        log.info("Dispatching %d new events", len(new_events))
+        # Don't dispatch events until tribe name is known (e.g. after server change)
+        _tribe_info = getattr(self, "_tribe_info", None)
+        _tribe_name = _tribe_info.tribe_name if _tribe_info else ""
+        if not _tribe_name:
+            log.info("Skipping %d events — tribe name not yet known", len(new_events))
+            return
 
-        # Build event dicts for storage/broadcast
-        _tribe_name = getattr(self, "_tribe_info", None)
-        _tribe_name = _tribe_name.tribe_name if _tribe_name else ""
+        log.info("Dispatching %d new events", len(new_events))
         event_dicts = [
             {
                 "day": e.day,
@@ -1085,6 +1088,9 @@ class TribeWatchApp:
     async def _parasaur_cycle(self) -> None:
         """Single parasaur notification capture → OCR → parse → session dispatch."""
         if self._paused or self._parasaur_capture is None:
+            return
+        tribe_info = getattr(self, "_tribe_info", None)
+        if tribe_info is None or not tribe_info.tribe_name:
             return
 
         img = self._parasaur_capture.grab()
