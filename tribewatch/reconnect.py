@@ -463,44 +463,10 @@ class ReconnectSequence:
             await self._report("failed", f"'JOIN LAST SESSION' not found after {_TITLE_TIMEOUT}s")
             return "retry"
 
-        # --- Stage 2b: Dismiss "PRESS TO START" overlay ---
-        # ARK shows a "PRESS TO START" overlay on top of the title screen.
-        # We need to dismiss it before we can click JOIN LAST SESSION.
-        await self._report("waiting_title", "Dismissing title overlay...")
-        for press_attempt in range(6):  # up to ~30s
-            send_key(self._window_title, "space")
-            await asyncio.sleep(3)
-            hwnd = _find_window_by_title(self._window_title)
-            if not hwnd:
-                continue
-            img = _grab_window(hwnd, bbox=None)
-            if img is None:
-                continue
-            # Verify JOIN LAST SESSION is still visible (means overlay is gone
-            # and we're on the actual main menu)
-            join_coords = self._find_join_button(img)
-            if join_coords is not None:
-                # Double-check: also look for menu items like "JOIN GAME" which
-                # only appear once the overlay is fully dismissed
-                if self._find_text_coords(img, "JOIN GAME") is not None:
-                    break
-            if press_attempt < 5:
-                await self._report(
-                    "waiting_title",
-                    f"Retrying Space press (attempt {press_attempt + 2})...",
-                )
-
-        # Re-scan for JOIN LAST SESSION after overlay dismissal
-        hwnd = _find_window_by_title(self._window_title)
-        if hwnd:
-            img = _grab_window(hwnd, bbox=None)
-            if img:
-                join_coords = self._find_join_button(img)
-        if join_coords is None:
-            await self._report("failed", "'JOIN LAST SESSION' lost after dismissing overlay")
-            return "retry"
-
         # --- Stage 3: Click JOIN LAST SESSION ---
+        # "JOIN LAST SESSION" is on the title/splash screen alongside
+        # "PRESS TO START" — it's directly clickable, no overlay dismissal needed.
+        # Re-find hwnd for coordinate conversion
         hwnd = _find_window_by_title(self._window_title) or hwnd
 
         # Convert client coords to screen coords
@@ -581,19 +547,21 @@ class ReconnectSequence:
                 )
                 return "retry"
 
+            # Check if we're still on the title screen
             join_coords = self._find_join_button(img)
             if join_coords is not None:
                 consecutive_clear = 0
                 continue
 
-            # Also check for "JOIN GAME" (main menu) — if visible, we're
-            # still on the menu, not loading
+            # Check if we ended up on the main menu instead of connecting.
+            # "JOIN GAME" is on the main menu — means the click didn't
+            # trigger a connection (JOIN LAST SESSION may not be available).
             if self._find_text_coords(img, "JOIN GAME") is not None:
-                consecutive_clear = 0
-                continue
+                await self._report("failed", "Landed on main menu instead of connecting — JOIN LAST SESSION may not be available")
+                return "retry"
 
-            # Title screen text gone — require 2 consecutive clear checks
-            # to avoid false positives from OCR flickers
+            # Title screen text gone and not on main menu — require 2
+            # consecutive clear checks to avoid false positives from OCR flickers
             consecutive_clear += 1
             if consecutive_clear >= 2:
                 opened = await self._open_tribe_log(pyautogui)
