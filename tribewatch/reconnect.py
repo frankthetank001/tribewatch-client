@@ -463,8 +463,44 @@ class ReconnectSequence:
             await self._report("failed", f"'JOIN LAST SESSION' not found after {_TITLE_TIMEOUT}s")
             return "retry"
 
+        # --- Stage 2b: Dismiss "PRESS TO START" overlay ---
+        # ARK shows a "PRESS TO START" overlay on top of the title screen.
+        # We need to dismiss it before we can click JOIN LAST SESSION.
+        await self._report("waiting_title", "Dismissing title overlay...")
+        for press_attempt in range(6):  # up to ~30s
+            send_key(self._window_title, "space")
+            await asyncio.sleep(3)
+            hwnd = _find_window_by_title(self._window_title)
+            if not hwnd:
+                continue
+            img = _grab_window(hwnd, bbox=None)
+            if img is None:
+                continue
+            # Verify JOIN LAST SESSION is still visible (means overlay is gone
+            # and we're on the actual main menu)
+            join_coords = self._find_join_button(img)
+            if join_coords is not None:
+                # Double-check: also look for menu items like "JOIN GAME" which
+                # only appear once the overlay is fully dismissed
+                if self._find_text_coords(img, "JOIN GAME") is not None:
+                    break
+            if press_attempt < 5:
+                await self._report(
+                    "waiting_title",
+                    f"Retrying Space press (attempt {press_attempt + 2})...",
+                )
+
+        # Re-scan for JOIN LAST SESSION after overlay dismissal
+        hwnd = _find_window_by_title(self._window_title)
+        if hwnd:
+            img = _grab_window(hwnd, bbox=None)
+            if img:
+                join_coords = self._find_join_button(img)
+        if join_coords is None:
+            await self._report("failed", "'JOIN LAST SESSION' lost after dismissing overlay")
+            return "retry"
+
         # --- Stage 3: Click JOIN LAST SESSION ---
-        # Re-find hwnd for coordinate conversion
         hwnd = _find_window_by_title(self._window_title) or hwnd
 
         # Convert client coords to screen coords
@@ -478,10 +514,42 @@ class ReconnectSequence:
         await asyncio.sleep(1)
         await self._report("clicking_join", "Clicked 'JOIN LAST SESSION'")
 
+        # --- Stage 3b: Verify the click worked ---
+        # Wait a few seconds and confirm the title screen is actually gone.
+        # If JOIN LAST SESSION is still visible, the click didn't land.
+        await asyncio.sleep(5)
+        still_on_title = False
+        for _verify in range(3):
+            hwnd = _find_window_by_title(self._window_title)
+            if hwnd:
+                img = _grab_window(hwnd, bbox=None)
+                if img and self._find_join_button(img) is not None:
+                    still_on_title = True
+                    break
+            await asyncio.sleep(2)
+
+        if still_on_title:
+            await self._report("clicking_join", "Click may not have landed — retrying...")
+            # Re-scan and try clicking again
+            hwnd = _find_window_by_title(self._window_title)
+            if hwnd:
+                img = _grab_window(hwnd, bbox=None)
+                if img:
+                    join_coords = self._find_join_button(img)
+                    if join_coords:
+                        point = (ctypes.c_long * 2)(join_coords[0], join_coords[1])
+                        ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point))
+                        focus_window(self._window_title)
+                        await asyncio.sleep(0.3)
+                        pyautogui.click(point[0], point[1])
+                        await asyncio.sleep(1)
+                        await self._report("clicking_join", "Retried click on 'JOIN LAST SESSION'")
+
         # --- Stage 4: Wait for game to load ---
         await self._report("waiting_load", "Waiting for game to load...")
         elapsed = 0.0
         last_update = 0.0
+        consecutive_clear = 0  # consecutive checks with no title screen
 
         while elapsed < _LOAD_TIMEOUT:
             await asyncio.sleep(_POLL_INTERVAL)
@@ -495,12 +563,14 @@ class ReconnectSequence:
             # Re-find hwnd each iteration
             hwnd = _find_window_by_title(self._window_title)
             if not hwnd:
+                consecutive_clear = 0
                 continue
 
             # Check if game is back to a loaded state — the title screen
             # text should no longer be present once the game world loads.
             img = _grab_window(hwnd, bbox=None)
             if img is None:
+                consecutive_clear = 0
                 continue
 
             # Check for "Connection Failed" dialog
@@ -512,8 +582,20 @@ class ReconnectSequence:
                 return "retry"
 
             join_coords = self._find_join_button(img)
-            if join_coords is None:
-                # Title screen text gone — game has loaded
+            if join_coords is not None:
+                consecutive_clear = 0
+                continue
+
+            # Also check for "JOIN GAME" (main menu) — if visible, we're
+            # still on the menu, not loading
+            if self._find_text_coords(img, "JOIN GAME") is not None:
+                consecutive_clear = 0
+                continue
+
+            # Title screen text gone — require 2 consecutive clear checks
+            # to avoid false positives from OCR flickers
+            consecutive_clear += 1
+            if consecutive_clear >= 2:
                 opened = await self._open_tribe_log(pyautogui)
                 return "success" if opened else "retry"
 
