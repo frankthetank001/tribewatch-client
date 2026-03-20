@@ -763,7 +763,7 @@ class ReconnectSequence:
                     if hwnd:
                         img = _grab_window(hwnd, bbox=None)
                         if img and self._has_tribe_log(img):
-                            await self._report("success", "Tribe log opened — monitoring should resume")
+                            await self._report("success", "Tribe log opened — monitoring resumed")
                             return True
                         # Console settings closed the tribe log — try reopening
                         log.info("Tribe log closed after console settings, pressing L to reopen")
@@ -773,7 +773,7 @@ class ReconnectSequence:
                         if hwnd:
                             img = _grab_window(hwnd, bbox=None)
                             if img and self._has_tribe_log(img):
-                                await self._report("success", "Tribe log reopened — monitoring should resume")
+                                await self._report("success", "Tribe log reopened — monitoring resumed")
                                 return True
                     # Fall through to next attempt
 
