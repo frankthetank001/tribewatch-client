@@ -788,9 +788,14 @@ class ReconnectSequence:
 
     async def _apply_console_settings(self, pyautogui) -> None:
         """Open console (~), paste ini.txt commands, press Enter, then close console."""
-        ini_path = Path(__file__).parent.parent / "scripts" / "ini.txt"
+        # In frozen builds, look next to the exe; otherwise relative to package root
+        if getattr(__import__('sys'), 'frozen', False):
+            base = Path(__import__('sys')._MEIPASS)
+        else:
+            base = Path(__file__).parent.parent
+        ini_path = base / "scripts" / "ini.txt"
         if not ini_path.exists():
-            log.debug("scripts/ini.txt not found, skipping console settings")
+            log.debug("scripts/ini.txt not found at %s, skipping console settings", ini_path)
             return
 
         try:
