@@ -464,52 +464,64 @@ class ReconnectSequence:
             return "retry"
 
         # --- Stage 3: Click JOIN LAST SESSION ---
-        # "JOIN LAST SESSION" is on the title/splash screen alongside
-        # "PRESS TO START" — it's directly clickable, no overlay dismissal needed.
-        # Re-find hwnd for coordinate conversion
-        hwnd = _find_window_by_title(self._window_title) or hwnd
+        # The title screen has a "PRESS TO START" overlay that can intercept
+        # clicks.  Dismiss it first with Space, then click JOIN LAST SESSION.
+        _MAX_JOIN_CLICKS = 5
 
-        # Convert client coords to screen coords
-        point = (ctypes.c_long * 2)(join_coords[0], join_coords[1])
-        ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point))  # type: ignore[attr-defined]
-        screen_x, screen_y = point[0], point[1]
+        for click_attempt in range(1, _MAX_JOIN_CLICKS + 1):
+            # Dismiss any "PRESS TO START" overlay before clicking
+            hwnd = _find_window_by_title(self._window_title) or hwnd
+            focus_window(self._window_title)
+            await asyncio.sleep(0.3)
+            send_key(self._window_title, "space")
+            await asyncio.sleep(1)
 
-        focus_window(self._window_title)
-        await asyncio.sleep(0.3)
-        pyautogui.click(screen_x, screen_y)
-        await asyncio.sleep(1)
-        await self._report("clicking_join", "Clicked 'JOIN LAST SESSION'")
+            # Re-grab the image — the overlay may have shifted the UI
+            hwnd = _find_window_by_title(self._window_title) or hwnd
+            img = _grab_window(hwnd, bbox=None)
+            if img:
+                fresh_coords = self._find_join_button(img)
+                if fresh_coords:
+                    join_coords = fresh_coords
 
-        # --- Stage 3b: Verify the click worked ---
-        # Wait a few seconds and confirm the title screen is actually gone.
-        # If JOIN LAST SESSION is still visible, the click didn't land.
-        await asyncio.sleep(5)
-        still_on_title = False
-        for _verify in range(3):
-            hwnd = _find_window_by_title(self._window_title)
-            if hwnd:
-                img = _grab_window(hwnd, bbox=None)
-                if img and self._find_join_button(img) is not None:
-                    still_on_title = True
-                    break
-            await asyncio.sleep(2)
+            # Convert client coords to screen coords and click
+            point = (ctypes.c_long * 2)(join_coords[0], join_coords[1])
+            ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point))  # type: ignore[attr-defined]
+            focus_window(self._window_title)
+            await asyncio.sleep(0.3)
+            pyautogui.click(point[0], point[1])
+            await asyncio.sleep(1)
+            await self._report(
+                "clicking_join",
+                f"Clicked 'JOIN LAST SESSION' (attempt {click_attempt}/{_MAX_JOIN_CLICKS})",
+            )
 
-        if still_on_title:
-            await self._report("clicking_join", "Click may not have landed — retrying...")
-            # Re-scan and try clicking again
-            hwnd = _find_window_by_title(self._window_title)
-            if hwnd:
-                img = _grab_window(hwnd, bbox=None)
-                if img:
-                    join_coords = self._find_join_button(img)
-                    if join_coords:
-                        point = (ctypes.c_long * 2)(join_coords[0], join_coords[1])
-                        ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point))
-                        focus_window(self._window_title)
-                        await asyncio.sleep(0.3)
-                        pyautogui.click(point[0], point[1])
-                        await asyncio.sleep(1)
-                        await self._report("clicking_join", "Retried click on 'JOIN LAST SESSION'")
+            # Verify the click worked — wait and check if title screen is gone
+            await asyncio.sleep(5)
+            still_on_title = False
+            for _verify in range(3):
+                hwnd = _find_window_by_title(self._window_title)
+                if hwnd:
+                    img = _grab_window(hwnd, bbox=None)
+                    if img and self._find_join_button(img) is not None:
+                        still_on_title = True
+                        break
+                await asyncio.sleep(2)
+
+            if not still_on_title:
+                break  # Click worked — proceed to waiting_load
+
+            if click_attempt < _MAX_JOIN_CLICKS:
+                await self._report(
+                    "clicking_join",
+                    f"Click did not land — retrying ({click_attempt}/{_MAX_JOIN_CLICKS})...",
+                )
+            else:
+                await self._report(
+                    "click_failed",
+                    f"JOIN LAST SESSION visible but click failed after {_MAX_JOIN_CLICKS} attempts",
+                )
+                return "retry"
 
         # --- Stage 4: Wait for game to load ---
         await self._report("waiting_load", "Waiting for game to load...")
