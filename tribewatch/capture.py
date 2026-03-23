@@ -151,6 +151,41 @@ def send_key(title: str, key: str) -> bool:
     return True
 
 
+WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP = 0x0202
+MK_LBUTTON = 0x0001
+
+
+def send_click(title: str, client_x: int, client_y: int) -> bool:
+    """Send a mouse click to a window via PostMessage at client coordinates.
+
+    Uses WM_LBUTTONDOWN/WM_LBUTTONUP directly to the window handle,
+    avoiding screen coordinate conversion issues (DPI, multi-monitor).
+
+    Args:
+        title: Window title to find.
+        client_x: X coordinate in the window's client area.
+        client_y: Y coordinate in the window's client area.
+
+    Returns:
+        True if the click was sent, False if window not found.
+    """
+    if not _IS_WIN32:
+        return False
+
+    hwnd = _find_window_by_title(title)
+    if not hwnd:
+        log.warning("send_click: window '%s' not found", title)
+        return False
+
+    # Pack coordinates as MAKELPARAM(x, y) = (y << 16) | (x & 0xFFFF)
+    lparam = (client_y << 16) | (client_x & 0xFFFF)
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
+    user32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam)
+    return True
+
+
 def _grab_window(hwnd: int, bbox: list[int] | None = None) -> Image.Image | None:
     """Capture a window's client area via PrintWindow.
 

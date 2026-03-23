@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from tribewatch.capture import _find_window_by_title, _grab_window, focus_window, send_key
+from tribewatch.capture import _find_window_by_title, _grab_window, focus_window, send_click, send_key
 
 if TYPE_CHECKING:
     from tribewatch.relay import ServerRelay
@@ -464,19 +464,12 @@ class ReconnectSequence:
             return "retry"
 
         # --- Stage 3: Click JOIN LAST SESSION ---
-        # The title screen has a "PRESS TO START" overlay that can intercept
-        # clicks.  Dismiss it first with Space, then click JOIN LAST SESSION.
+        # The button is on the title screen — click it directly at client
+        # coordinates via PostMessage (avoids DPI / screen-coord issues).
         _MAX_JOIN_CLICKS = 5
 
         for click_attempt in range(1, _MAX_JOIN_CLICKS + 1):
-            # Dismiss any "PRESS TO START" overlay before clicking
-            hwnd = _find_window_by_title(self._window_title) or hwnd
-            focus_window(self._window_title)
-            await asyncio.sleep(0.3)
-            send_key(self._window_title, "space")
-            await asyncio.sleep(1)
-
-            # Re-grab the image — the overlay may have shifted the UI
+            # Re-grab the image to get fresh button coordinates each attempt
             hwnd = _find_window_by_title(self._window_title) or hwnd
             img = _grab_window(hwnd, bbox=None)
             if img:
@@ -484,16 +477,15 @@ class ReconnectSequence:
                 if fresh_coords:
                     join_coords = fresh_coords
 
-            # Convert client coords to screen coords and click
-            point = (ctypes.c_long * 2)(join_coords[0], join_coords[1])
-            ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point))  # type: ignore[attr-defined]
+            # Send click directly to the window at client coordinates
             focus_window(self._window_title)
             await asyncio.sleep(0.3)
-            pyautogui.click(point[0], point[1])
+            send_click(self._window_title, join_coords[0], join_coords[1])
             await asyncio.sleep(1)
             await self._report(
                 "clicking_join",
-                f"Clicked 'JOIN LAST SESSION' (attempt {click_attempt}/{_MAX_JOIN_CLICKS})",
+                f"Clicked 'JOIN LAST SESSION' at ({join_coords[0]}, {join_coords[1]}) "
+                f"(attempt {click_attempt}/{_MAX_JOIN_CLICKS})",
             )
 
             # Verify the click worked — wait and check if title screen is gone
