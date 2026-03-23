@@ -791,7 +791,12 @@ class ReconnectSequence:
         return False
 
     async def _apply_console_settings(self, pyautogui) -> None:
-        """Open console (~), paste ini.txt commands, press Enter, then close console."""
+        """Open console (~), paste ini.txt commands, press Enter, then close console.
+
+        Uses focus_window + pyautogui for the whole sequence since the UE
+        console requires the window to be focused and tilde doesn't reliably
+        open via PostMessage.
+        """
         # In frozen builds, look next to the exe; otherwise relative to package root
         if getattr(__import__('sys'), 'frozen', False):
             base = Path(__import__('sys')._MEIPASS)
@@ -808,15 +813,27 @@ class ReconnectSequence:
                 return
 
             import pyperclip
-            send_key(self._window_title, "`")
-            await asyncio.sleep(0.5)
-            pyperclip.copy(text)
-            # Ctrl+V requires focus — this only runs during reconnect
+
+            # Focus window first — console requires active focus
             focus_window(self._window_title)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
+
+            # Open console with tilde via pyautogui (PostMessage doesn't
+            # reliably trigger UE console bindings)
+            pyautogui.press("`")
+            await asyncio.sleep(0.5)
+
+            # Copy commands to clipboard and paste
+            pyperclip.copy(text)
+            await asyncio.sleep(0.1)
             pyautogui.hotkey("ctrl", "v")
+            await asyncio.sleep(0.5)
+
+            # Submit and close console
+            pyautogui.press("enter")
             await asyncio.sleep(0.3)
-            send_key(self._window_title, "enter")
+            pyautogui.press("`")
+
             log.info("Applied console settings from scripts/ini.txt")
         except Exception:
             log.debug("Failed to apply console settings", exc_info=True)
