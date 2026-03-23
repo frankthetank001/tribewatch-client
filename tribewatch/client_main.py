@@ -30,6 +30,7 @@ def main() -> None:
         _cmd_test_discord,
         _cmd_test_ocr,
         _discover_and_confirm_tribe_name,
+        _set_console_title_and_icon,
         _set_dpi_awareness,
         _setup_logging,
     )
@@ -37,6 +38,7 @@ def main() -> None:
     from tribewatch.updater import is_frozen
 
     _set_dpi_awareness()
+    _set_console_title_and_icon()
 
     parser = argparse.ArgumentParser(
         prog="TribeWatch",

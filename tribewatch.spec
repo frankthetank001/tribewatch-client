@@ -26,6 +26,7 @@ a = Analysis(
         (os.path.join(_rapidocr_dir, 'config.yaml'), 'rapidocr_onnxruntime'),
         (os.path.join(_rapidocr_dir, 'models'), 'rapidocr_onnxruntime/models'),
         ('scripts', 'scripts'),
+        ('tribewatch.ico', '.'),
     ],
     hiddenimports=[
         'tribewatch.eos',

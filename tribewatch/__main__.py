@@ -43,6 +43,49 @@ def _set_dpi_awareness() -> None:
         pass
 
 
+def _set_console_title_and_icon() -> None:
+    """Set the console window title to include the version and apply the app icon."""
+    try:
+        ctypes.windll.kernel32.SetConsoleTitleW(f"TribeWatch v{__version__}")
+    except Exception:
+        pass
+
+    # Set the console window icon from the bundled .ico file
+    try:
+        if getattr(sys, "frozen", False):
+            base = Path(sys._MEIPASS)  # type: ignore[attr-defined]
+        else:
+            base = Path(__file__).parent.parent
+        ico_path = base / "tribewatch.ico"
+        if not ico_path.exists():
+            return
+
+        user32 = ctypes.windll.user32
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if not hwnd:
+            return
+
+        # LoadImageW with IMAGE_ICON, LR_LOADFROMFILE
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x0010
+        LR_DEFAULTSIZE = 0x0040
+        WM_SETICON = 0x0080
+        ICON_SMALL = 0
+        ICON_BIG = 1
+
+        icon_path_str = str(ico_path)
+        # Load small icon (16x16) and big icon (32x32)
+        h_small = user32.LoadImageW(0, icon_path_str, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        h_big = user32.LoadImageW(0, icon_path_str, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+
+        if h_small:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_small)
+        if h_big:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_big)
+    except Exception:
+        pass
+
+
 def _setup_logging(level: str) -> None:
     from logging.handlers import RotatingFileHandler
 
@@ -1083,6 +1126,9 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
     The client toml only contains client-relevant sections; server-owned
     sections (discord, alerts, web, generator) are never written.
     """
+    log = logging.getLogger(__name__)
+    log.info("TribeWatch client v%s starting", __version__)
+
     from dataclasses import asdict
 
     from tribewatch.app import TribeWatchApp
@@ -1248,6 +1294,7 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
 
 def main() -> None:
     _set_dpi_awareness()
+    _set_console_title_and_icon()
 
     parser = argparse.ArgumentParser(
         prog="tribewatch",
