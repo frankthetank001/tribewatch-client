@@ -60,28 +60,45 @@ def _set_console_title_and_icon() -> None:
         if not ico_path.exists():
             return
 
+        # Declare proper ctypes signatures — default c_int truncates
+        # 64-bit handles on x64 Windows.
+        from ctypes import wintypes
         user32 = ctypes.windll.user32
-        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+
+        _GetConsoleWindow = ctypes.windll.kernel32.GetConsoleWindow
+        _GetConsoleWindow.restype = wintypes.HWND
+
+        _LoadImageW = user32.LoadImageW
+        _LoadImageW.argtypes = [
+            wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+            ctypes.c_int, ctypes.c_int, wintypes.UINT,
+        ]
+        _LoadImageW.restype = wintypes.HANDLE
+
+        _SendMessageW = user32.SendMessageW
+        _SendMessageW.argtypes = [
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        ]
+        _SendMessageW.restype = wintypes.LPARAM
+
+        hwnd = _GetConsoleWindow()
         if not hwnd:
             return
 
-        # LoadImageW with IMAGE_ICON, LR_LOADFROMFILE
         IMAGE_ICON = 1
         LR_LOADFROMFILE = 0x0010
-        LR_DEFAULTSIZE = 0x0040
         WM_SETICON = 0x0080
         ICON_SMALL = 0
         ICON_BIG = 1
 
         icon_path_str = str(ico_path)
-        # Load small icon (16x16) and big icon (32x32)
-        h_small = user32.LoadImageW(0, icon_path_str, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
-        h_big = user32.LoadImageW(0, icon_path_str, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+        h_small = _LoadImageW(None, icon_path_str, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        h_big = _LoadImageW(None, icon_path_str, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
 
         if h_small:
-            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_small)
+            _SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_small)
         if h_big:
-            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_big)
+            _SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_big)
     except Exception:
         pass
 
