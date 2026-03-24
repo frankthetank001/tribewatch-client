@@ -827,12 +827,10 @@ class ReconnectSequence:
             pyperclip.copy(text)
             await asyncio.sleep(0.1)
             pyautogui.hotkey("ctrl", "v")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.5)
 
-            # Submit and close console
+            # Submit command — Enter also closes the console in UE
             pyautogui.press("enter")
-            await asyncio.sleep(0.3)
-            pyautogui.press("`")
 
             log.info("Applied console settings from scripts/ini.txt")
         except Exception:
