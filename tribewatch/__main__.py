@@ -1095,8 +1095,14 @@ def _handle_reconnect(app: Any, auto: bool = False, use_browser: bool | None = N
     log = logging.getLogger(__name__)
     existing = getattr(app, "_reconnect_seq", None)
     if existing is not None and existing.running:
-        log.info("Reconnect already in progress, ignoring")
-        return
+        if not auto:
+            # Manual reconnect from website/API — cancel the stale sequence
+            # (which may be sitting in a long backoff sleep) and start fresh.
+            log.info("Cancelling existing reconnect sequence for manual retry")
+            asyncio.create_task(existing.cancel())
+        else:
+            log.info("Reconnect already in progress, ignoring")
+            return
 
     relay = getattr(app, "_relay", None)
     if not relay:
