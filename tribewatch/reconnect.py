@@ -557,17 +557,34 @@ class ReconnectSequence:
                 )
                 return "retry"
 
+            # Check for "Failed to join" dialog — the join was attempted but
+            # the server rejected it.  Click ACCEPT, then switch to the
+            # server browser for subsequent attempts.
+            if self._find_text_coords(img, "ACCEPT") is not None:
+                failed_join = self._find_text_coords(img, "FAILED")
+                if failed_join is not None:
+                    accept_coords = self._find_text_coords(img, "ACCEPT")
+                    if accept_coords:
+                        send_click(self._window_title, accept_coords[0], accept_coords[1])
+                    await asyncio.sleep(2)
+                    self._use_browser = True
+                    await self._report(
+                        "failed",
+                        "Join failed — switching to server browser",
+                    )
+                    return "retry"
+
             # Check if we're still on the title screen
             join_coords = self._find_join_button(img)
             if join_coords is not None:
                 consecutive_clear = 0
                 continue
 
-            # Check if we ended up on the main menu instead of connecting.
-            # "JOIN GAME" is on the main menu — means the click didn't
-            # trigger a connection (JOIN LAST SESSION may not be available).
+            # Check if we ended up on the main menu (JOIN GAME visible but
+            # no failure dialog) — the title screen was dismissed without
+            # JOIN LAST SESSION triggering a connection.
             if self._find_text_coords(img, "JOIN GAME") is not None:
-                await self._report("failed", "Landed on main menu instead of connecting — JOIN LAST SESSION may not be available")
+                await self._report("failed", "Landed on main menu — retrying")
                 return "retry"
 
             # Title screen text gone and not on main menu — require 2
