@@ -529,7 +529,7 @@ def _cmd_test_ocr(config_path: Path) -> None:
 def _cmd_test_discord(config_path: Path) -> None:
     from tribewatch.config import load_config
     from tribewatch.parser import EventType, Severity, TribeLogEvent
-    from tribewatch.webhook import WebhookDispatcher
+    from tribewatch.webhook import WebhookDispatcher  # server-side module (requires full repo)
 
     cfg = load_config(config_path)
 

@@ -16,7 +16,6 @@ from tribewatch.dedup import DedupStore
 from tribewatch.ocr_engine import recognize
 from tribewatch.parser import EVENT_TYPE_LABELS, EventType, JoinLeaveEvent, ServerJoinEvent, Severity, TribeInfo, TribeLogEvent, extract_member_name, parse_events, parse_join_leave_notifications, parse_parasaur_notification, parse_server_join_notifications, parse_tribe_window
 from tribewatch.fuzzy import edit_distance, fuzzy_threshold, names_match
-from tribewatch.webhook import WebhookDispatcher, resolve_mention
 
 if TYPE_CHECKING:
     from tribewatch.relay import ServerRelay
@@ -105,10 +104,6 @@ def resolve_event_action(
     - ping_target: role/user ID to ping (empty = use global); ``!owner`` resolved
     - ping_member: whether to @mention the specific tribe member involved
     """
-    from tribewatch.webhook import resolve_mention
-
-    owner_id = config.discord.owner_discord_id
-    mentions = config.discord.mentions
     ev_type = event.event_type.value
     raw_text_lower = event.raw_text.lower()
 
@@ -123,8 +118,7 @@ def resolve_event_action(
         if rule.event_type == ev_type:
             if rule.text_contains and rule.text_contains.lower() not in raw_text_lower:
                 continue
-            target = resolve_mention(rule.ping_target, mentions, owner_id)
-            return rule.action, rule.severity_override or None, rule.ping, rule.discord, target, rule.ping_member
+            return rule.action, rule.severity_override or None, rule.ping, rule.discord, rule.ping_target, rule.ping_member
 
     # Fall back to built-in defaults
     default = _DEFAULT_ACTIONS.get(ev_type, "batch")
@@ -161,16 +155,8 @@ class TribeWatchApp:
         )
         self._dedup_stores: dict[str, DedupStore] = {}
         self._state_file_base: Path = Path(config.general.state_file)
-        self.dispatcher = WebhookDispatcher(
-            alert_webhook=config.discord.alert_webhook,
-            raid_webhook=config.discord.raid_webhook,
-            debug_webhook=config.discord.debug_webhook,
-            tasks_webhook=config.discord.tasks_webhook,
-            ping_role_id=config.discord.ping_role_id,
-            batch_interval=config.discord.batch_interval,
-            owner_discord_id=config.discord.owner_discord_id,
-            mentions=config.discord.mentions,
-        )
+        # Discord dispatching is server-side only — the client sends raw
+        # events over the relay websocket and the server handles webhooks.
         # Parasaur detection window (optional — only if bbox configured)
         self._parasaur_capture: ScreenCapture | None = None
         self._parasaur_lookup: dict[str, str] = {}
@@ -911,10 +897,6 @@ class TribeWatchApp:
             log.debug("OCR returned empty text")
             return
 
-        # Send raw text to debug webhook if configured (client-side only)
-        if not self._relay and self.config.discord.debug_webhook:
-            await self.dispatcher.send_debug(text)
-
         events = parse_events(text)
         if not events:
             return
@@ -969,121 +951,12 @@ class TribeWatchApp:
         for event in new_events:
             self._print_event(event)
 
-        # Discord dispatch is server-side only.  When connected via relay the
-        # server's ClientHandler._dispatch_discord() handles webhooks — the
-        # client must not duplicate that work.
-        if not self._relay:
-            await self._dispatch_discord(new_events, event_dicts)
-
         # Broadcast to browser WebSocket clients
         await self._broadcast_events(event_dicts)
 
         # Update stats
         self._events_today_count += len(new_events)
         self._total_events_count += len(new_events)
-
-    async def _dispatch_discord(
-        self, new_events: list, event_dicts: list[dict],
-    ) -> None:
-        """Client-side Discord dispatch (only used when NOT connected via relay)."""
-        # Cache tribe members once per cycle for per-member Discord pings
-        _cached_members: list[dict] | None = None
-        if self._tribe_store:
-            try:
-                _cached_members = await self._tribe_store.get_all_members()
-            except Exception:
-                log.debug("Failed to fetch tribe members for ping lookup", exc_info=True)
-
-        # Deferred escalation sends: collect all same-type events from the
-        # batch before sending, so the summary includes events that arrive
-        # after the threshold is first crossed.
-        pending_escalations: dict[str, dict] = {}
-
-        for i, event in enumerate(new_events):
-            action, severity_override, ping, discord, ping_target, ping_member = resolve_event_action(event, self.config)
-            if not discord:
-                continue
-
-            ev_type = event.event_type.value
-            rule = self._find_alert_rule(ev_type, raw_text=event.raw_text)
-            condition_label = rule.text_contains if rule else ""
-            event_line = f"Day {event.day}, {event.time}: {event.raw_text}"
-            esc, esc_texts = self._check_escalation(ev_type, rule, raw_text=event_line)
-
-            if esc == "escalate":
-                raw_esc = (rule.escalation_target if rule else "") or ping_target
-                esc_target = resolve_mention(
-                    raw_esc, self.config.discord.mentions,
-                    self.config.discord.owner_discord_id,
-                )
-                pending_escalations[ev_type] = {
-                    "texts": esc_texts,
-                    "rule": rule,
-                    "condition_label": condition_label,
-                    "esc_target": esc_target,
-                    "last_idx": i,
-                }
-                continue
-            if esc == "suppress":
-                if ev_type in pending_escalations:
-                    pending_escalations[ev_type]["texts"].append(event_line)
-                    pending_escalations[ev_type]["last_idx"] = i
-                else:
-                    log.debug("Escalation: suppressing Discord send for %s", ev_type)
-                continue
-
-            if action == "critical":
-                extra_mentions: list[str] = []
-                if ping_member and _cached_members:
-                    member_name = extract_member_name(event.raw_text, event.event_type)
-                    if member_name:
-                        extra_mentions = self._find_member_discord_ids(member_name, _cached_members)
-
-                result = await self.dispatcher.send_critical(
-                    event, ping=ping, ping_target=ping_target,
-                    extra_mentions=extra_mentions or None,
-                    condition_label=condition_label,
-                )
-                event_dicts[i]["ping_status"] = result["ping_status"]
-                event_dicts[i]["ping_detail"] = result["ping_detail"]
-                log.info(
-                    "Discord: %s → %s (%s)",
-                    ev_type, result["ping_status"], result["ping_detail"],
-                )
-
-                if event_dicts[i].get("id"):
-                    await self._update_ping(
-                        event_dicts[i]["id"],
-                        result["ping_status"],
-                        result["ping_detail"],
-                    )
-            else:
-                self.dispatcher.queue_batch(event, condition_label=condition_label)
-
-        # --- Send deferred escalation summaries ---
-        for ev_type, esc_info in pending_escalations.items():
-            rule = esc_info["rule"]
-            result = await self.dispatcher.send_escalation(
-                event_type=ev_type,
-                count=len(esc_info["texts"]),
-                window_minutes=rule.escalation_window if rule else 10,
-                ping_target=esc_info["esc_target"],
-                event_texts=esc_info["texts"],
-                condition_label=esc_info.get("condition_label", ""),
-            )
-            idx = esc_info["last_idx"]
-            event_dicts[idx]["ping_status"] = result["ping_status"]
-            event_dicts[idx]["ping_detail"] = result["ping_detail"]
-            log.info(
-                "Discord escalation: %s → %s (%s)",
-                ev_type, result["ping_status"], result["ping_detail"],
-            )
-            if event_dicts[idx].get("id"):
-                await self._update_ping(
-                    event_dicts[idx]["id"],
-                    result["ping_status"],
-                    result["ping_detail"],
-                )
 
     async def _parasaur_cycle(self) -> None:
         """Single parasaur notification capture → OCR → parse → session dispatch."""
@@ -1248,34 +1121,6 @@ class TribeWatchApp:
         for i, event in enumerate(new_events):
             self._print_event(event)
 
-        # Discord dispatch is server-side only when connected via relay
-        if not self._relay:
-            for i, event in enumerate(new_events):
-                ev_type = event.event_type.value
-                alerts = self._parasaur_alert_settings(ev_type)
-
-                if not alerts.discord or alerts.action == "ignore":
-                    continue
-
-                if alerts.action == "critical":
-                    result = await self.dispatcher.send_critical(
-                        event, ping=alerts.ping, ping_target=alerts.ping_target,
-                    )
-                    event_dicts[i]["ping_status"] = result["ping_status"]
-                    event_dicts[i]["ping_detail"] = result["ping_detail"]
-                    log.info(
-                        "Discord: %s → %s (%s)",
-                        ev_type, result["ping_status"], result["ping_detail"],
-                    )
-                    if event_dicts[i].get("id"):
-                        await self._update_ping(
-                            event_dicts[i]["id"],
-                            result["ping_status"],
-                            result["ping_detail"],
-                        )
-                else:
-                    self.dispatcher.queue_batch(event)
-
         await self._broadcast_events(event_dicts)
 
         self._events_today_count += len(new_events)
@@ -1343,15 +1188,6 @@ class TribeWatchApp:
                 discord = alerts.discord
                 ping_target = alerts.ping_target
 
-                send = action != "ignore" and discord
-                if send and not self._relay:
-                    if action == "critical":
-                        result = await self.dispatcher.send_critical(
-                            brief_event, ping=ping, ping_target=ping_target,
-                        )
-                    else:
-                        self.dispatcher.queue_batch(brief_event)
-
                 # Broadcast to browser WebSocket clients
                 await self._broadcast_events([brief_dict])
 
@@ -1393,17 +1229,6 @@ class TribeWatchApp:
                 ids = await self._store_events([clear_dict])
                 if ids:
                     clear_dict["id"] = ids[0]
-
-                # Post green embed to alert webhook (client-side only)
-                if not self._relay and self.config.discord.alert_webhook:
-                    await self.dispatcher._post_webhook(
-                        self.config.discord.alert_webhook,
-                        {"embeds": [{
-                            "title": "\u2705 " + label,
-                            "description": f"No longer detecting an enemy.\nSession duration: **{duration_str}**",
-                            "color": 0x00CC00,
-                        }]},
-                    )
 
                 # Broadcast to browser WebSocket clients
                 await self._broadcast_events([clear_dict])
@@ -1720,16 +1545,6 @@ class TribeWatchApp:
             return False
         return (time.time() - last_ok) < 300  # 5 minutes
 
-    async def _batch_flush_loop(self) -> None:
-        """Periodically flush batched non-critical events."""
-        while self._running:
-            await asyncio.sleep(self.config.discord.batch_interval)
-            try:
-                await self.dispatcher.flush_batch()
-                await self.dispatcher.flush_retries()
-            except Exception:
-                log.exception("Batch flush error")
-
     async def run(self) -> None:
         """Run the main monitoring loop."""
         self._running = True
@@ -1765,7 +1580,6 @@ class TribeWatchApp:
                 self.config.tribe.bbox,
             )
 
-        flush_task = asyncio.create_task(self._batch_flush_loop())
         parasaur_task = None
         if self._parasaur_capture:
             parasaur_task = asyncio.create_task(self._parasaur_loop())
@@ -1789,11 +1603,6 @@ class TribeWatchApp:
                 await asyncio.sleep(self.config.tribe_log.interval)
         finally:
             self._running = False
-            flush_task.cancel()
-            try:
-                await flush_task
-            except asyncio.CancelledError:
-                pass
             if parasaur_task:
                 parasaur_task.cancel()
                 try:
@@ -1822,8 +1631,6 @@ class TribeWatchApp:
                 await idle_monitor_task
             except asyncio.CancelledError:
                 pass
-            # Final flush and save
-            await self.dispatcher.flush_batch()
             for store in self._dedup_stores.values():
                 store.save()
             self.capture.close()
@@ -1831,7 +1638,6 @@ class TribeWatchApp:
                 self._parasaur_capture.close()
             if self._tribe_capture:
                 self._tribe_capture.close()
-            await self.dispatcher.close()
             log.info("TribeWatch stopped")
 
     def stop(self) -> None:
