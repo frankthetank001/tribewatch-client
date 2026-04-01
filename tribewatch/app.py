@@ -300,25 +300,6 @@ class TribeWatchApp:
         suffix = "_".join(parts)
         return base.with_stem(f"{base.stem}_{suffix}")
 
-    def _migrate_dedup_for_server_id(self, server_id: str) -> None:
-        """Rename dedup state files to include server_id when it first becomes known."""
-        if not server_id:
-            return
-        for tribe_name, store in list(self._dedup_stores.items()):
-            if not tribe_name:
-                continue  # generic store, will be migrated when tribe name is known
-            old_sf = store.state_file
-            new_sf = self._state_file_for(tribe_name)
-            if old_sf and new_sf and old_sf != new_sf:
-                store.state_file = new_sf
-                store.save()
-                if old_sf.exists():
-                    try:
-                        old_sf.unlink()
-                    except OSError:
-                        pass
-                log.info("Migrated dedup state %s -> %s", old_sf.name, new_sf.name)
-
     def _get_dedup(self) -> DedupStore:
         """Return the DedupStore for the currently monitored tribe.
 
@@ -568,9 +549,6 @@ class TribeWatchApp:
                     # change handler does it after the user confirms.
                 else:
                     self._server_id = new_id
-                    # Migrate dedup state files when server_id first becomes known
-                    if not old_id:
-                        self._migrate_dedup_for_server_id(new_id)
                     self._server_name = new_name
         except Exception:
             pass
@@ -1432,27 +1410,6 @@ class TribeWatchApp:
         # --- Migrate dedup store when tribe name first becomes known ---
         prev_tribe = prev_info.tribe_name if prev_info else ""
         new_tribe = info.tribe_name or ""
-        if prev_tribe == "" and new_tribe != "" and "" in self._dedup_stores:
-            old_store = self._dedup_stores.pop("")
-            old_sf = old_store.state_file
-            new_sf = self._state_file_for(new_tribe)
-            if new_sf and new_sf.exists():
-                # Named state file already exists — load it instead of overwriting
-                named_store = DedupStore(state_file=new_sf)
-                self._dedup_stores[new_tribe] = named_store
-            else:
-                # No existing file — move the generic store to the named path
-                old_store.state_file = new_sf
-                old_store.save()
-                self._dedup_stores[new_tribe] = old_store
-            # Remove the old generic state file
-            if old_sf and old_sf.exists() and old_sf != new_sf:
-                try:
-                    old_sf.unlink()
-                except OSError:
-                    pass
-            log.info("Migrated dedup state from generic to tribe '%s' (%s)", new_tribe, new_sf)
-
         # --- Transition detection & persistence ---
         # When a relay is active (standalone or client mode), the server-side
         # ClientHandler handles upsert/snapshot/stale via the tribe_info message.
