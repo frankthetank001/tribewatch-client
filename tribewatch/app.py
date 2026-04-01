@@ -1544,6 +1544,17 @@ class TribeWatchApp:
                 self.config.tribe.bbox,
             )
 
+        # Resolve server_id early so events aren't skipped on first cycle
+        try:
+            from tribewatch.server_id import get_server_info
+            info = get_server_info()
+            if info["server_id"]:
+                self._server_id = info["server_id"]
+                self._server_name = info["server_name"]
+                log.info("Server ID resolved on startup: %s (%s)", self._server_id, self._server_name)
+        except Exception:
+            log.debug("Early server_id resolution failed, will retry via heartbeat")
+
         parasaur_task = None
         if self._parasaur_capture:
             parasaur_task = asyncio.create_task(self._parasaur_loop())
