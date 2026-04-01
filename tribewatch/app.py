@@ -893,22 +893,22 @@ class TribeWatchApp:
         if len(events) < pre_filter:
             log.info("Parsed %d events, %d filtered as 'ignore'", pre_filter, pre_filter - len(events))
 
+        # Don't process events until tribe name and server ID are known
+        _tribe_info = getattr(self, "_tribe_info", None)
+        _tribe_name = _tribe_info.tribe_name if _tribe_info else ""
+        if not _tribe_name:
+            log.info("Skipping %d events — tribe name not yet known", len(events))
+            return
+        if not getattr(self, "_server_id", ""):
+            log.info("Skipping %d events — server ID not yet known", len(events))
+            return
+
         # Dedup
         dedup = self._get_dedup()
         new_events = dedup.filter_new(events)
         if not new_events:
             log.info("Parsed %d events, all duplicates (high water: Day %d, %s)",
                      len(events), dedup._high_water[0], dedup._high_water[1])
-            return
-
-        # Don't dispatch events until tribe name and server ID are known
-        _tribe_info = getattr(self, "_tribe_info", None)
-        _tribe_name = _tribe_info.tribe_name if _tribe_info else ""
-        if not _tribe_name:
-            log.info("Skipping %d events — tribe name not yet known", len(new_events))
-            return
-        if not getattr(self, "_server_id", ""):
-            log.info("Skipping %d events — server ID not yet known", len(new_events))
             return
 
         log.info("Dispatching %d new events", len(new_events))
