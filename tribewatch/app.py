@@ -305,7 +305,8 @@ class TribeWatchApp:
 
         Creates a new store on first access for each tribe, using a
         per-tribe state file so that high-water marks and hash buffers
-        don't leak across tribes.
+        don't leak across tribes. Waits for server_id to be known before
+        creating a persistent state file.
         """
         tribe_name = ""
         info = getattr(self, "_tribe_info", None)
@@ -313,20 +314,23 @@ class TribeWatchApp:
             tribe_name = info.tribe_name or ""
 
         if tribe_name not in self._dedup_stores:
-            sf = self._state_file_for(tribe_name)
-            # Migrate legacy state file (without server_id) if the new path doesn't exist yet
-            if sf and not sf.exists() and tribe_name:
-                base = getattr(self, "_state_file_base", None)
-                if base:
-                    legacy_safe = re.sub(r'[<>:"/\\|?*\s]+', "_", tribe_name).strip("_").lower()
-                    legacy_sf = base.with_stem(f"{base.stem}_{legacy_safe}")
-                    if legacy_sf != sf and legacy_sf.exists():
-                        try:
-                            legacy_sf.rename(sf)
-                            log.info("Migrated state file %s -> %s", legacy_sf.name, sf.name)
-                        except OSError:
-                            pass
-            self._dedup_stores[tribe_name] = DedupStore(state_file=sf)
+            server_id = getattr(self, "_server_id", "")
+            if tribe_name and not server_id:
+                # Server ID not yet known — use in-memory only (no state file)
+                self._dedup_stores[tribe_name] = DedupStore(state_file=None)
+            else:
+                sf = self._state_file_for(tribe_name)
+                self._dedup_stores[tribe_name] = DedupStore(state_file=sf)
+        elif tribe_name:
+            # If we have a store without a state file and server_id is now known,
+            # upgrade it to use a persistent file
+            store = self._dedup_stores[tribe_name]
+            server_id = getattr(self, "_server_id", "")
+            if store.state_file is None and server_id:
+                sf = self._state_file_for(tribe_name)
+                store.state_file = sf
+                store.save()
+                log.info("Dedup store upgraded to persistent: %s", sf)
 
         return self._dedup_stores[tribe_name]
 
@@ -897,11 +901,14 @@ class TribeWatchApp:
                      len(events), dedup._high_water[0], dedup._high_water[1])
             return
 
-        # Don't dispatch events until tribe name is known (e.g. after server change)
+        # Don't dispatch events until tribe name and server ID are known
         _tribe_info = getattr(self, "_tribe_info", None)
         _tribe_name = _tribe_info.tribe_name if _tribe_info else ""
         if not _tribe_name:
             log.info("Skipping %d events — tribe name not yet known", len(new_events))
+            return
+        if not getattr(self, "_server_id", ""):
+            log.info("Skipping %d events — server ID not yet known", len(new_events))
             return
 
         log.info("Dispatching %d new events", len(new_events))
@@ -1470,7 +1477,7 @@ class TribeWatchApp:
                 info.members_online,
                 info.members_total,
             )
-            if self._relay:
+            if self._relay and getattr(self, "_server_id", ""):
                 from dataclasses import asdict
                 await self._relay.send_tribe_info(asdict(info))
             if self._ws_manager:
