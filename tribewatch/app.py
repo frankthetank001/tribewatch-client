@@ -589,17 +589,27 @@ class TribeWatchApp:
 
         return status
 
+    _EOS_BASE_INTERVAL = 300       # 5 min normal
+    _EOS_MAX_BACKOFF = 3600        # 1 hour max between retries
+
     async def _refresh_eos_info(self) -> None:
-        """Query EOS for server info if refresh interval has elapsed."""
+        """Query EOS for server info with exponential backoff on failure."""
         server_name = getattr(self, "_server_name", "")
         if not server_name:
             return
 
         now = time.monotonic()
-        interval = getattr(self, "_EOS_REFRESH_INTERVAL", 300)
+        fail_count = getattr(self, "_eos_fail_count", 0)
+        # Exponential backoff: 5min, 10min, 20min, 40min, capped at 1hr
+        interval = min(
+            self._EOS_BASE_INTERVAL * (2 ** fail_count),
+            self._EOS_MAX_BACKOFF,
+        )
         last_query = getattr(self, "_eos_last_query", 0)
         if now - last_query < interval:
             return
+
+        self._eos_last_query = now
 
         try:
             from tribewatch.eos import AsyncEOSClient, extract_server_info, parse_eos_daytime
@@ -609,12 +619,14 @@ class TribeWatchApp:
 
             session = await self._eos_client.get_server_by_name(server_name)
             if session is None:
-                log.debug("EOS: no session found for server %r", server_name)
+                self._eos_fail_count = getattr(self, "_eos_fail_count", 0) + 1
+                if self._eos_fail_count <= 3:
+                    log.debug("EOS: no session found for server %r (retry in %ds)", server_name, interval)
                 return
 
             info = extract_server_info(session)
             self._eos_info = info
-            self._eos_last_query = now
+            self._eos_fail_count = 0  # reset on success
 
             log.info(
                 "EOS server info: %s — %d/%d players, map=%s, Day %s",
@@ -633,7 +645,12 @@ class TribeWatchApp:
                     store.seed_high_water_from_eos(eos_day, "00:00:00")
 
         except Exception:
-            log.warning("EOS refresh failed", exc_info=True)
+            self._eos_fail_count = getattr(self, "_eos_fail_count", 0) + 1
+            next_interval = min(self._EOS_BASE_INTERVAL * (2 ** self._eos_fail_count), self._EOS_MAX_BACKOFF)
+            if self._eos_fail_count <= 3:
+                log.warning("EOS refresh failed (retry #%d in %ds)", self._eos_fail_count, next_interval, exc_info=True)
+            else:
+                log.debug("EOS refresh still failing (retry #%d in %ds)", self._eos_fail_count, next_interval)
 
     async def _relay_heartbeat_loop(self) -> None:
         """Periodically send status to server via relay."""
