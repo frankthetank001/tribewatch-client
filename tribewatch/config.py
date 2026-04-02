@@ -56,6 +56,11 @@ class AlertsConfig:
     idle_ping: bool = False
     idle_ping_target: str = ""  # role/user ID (empty = use global ping_role_id)
     never_active_alert: bool = True  # alert if client connected but monitoring never starts
+    # Presence alerts (consolidated from former [presence] section)
+    offline_webhook: bool = False  # Discord alert on client offline
+    online_webhook: bool = False  # Discord alert on client back online
+    idle_webhook: bool = True  # Discord alert when client stops monitoring
+    presence_webhook_url: str = ""  # empty = use discord.alert_webhook
 
 
 @dataclass
