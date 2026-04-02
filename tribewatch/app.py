@@ -16,7 +16,6 @@ from tribewatch.dedup import DedupStore
 from tribewatch.ocr_engine import recognize
 from tribewatch.parser import EVENT_TYPE_LABELS, EventType, JoinLeaveEvent, ServerJoinEvent, Severity, TribeInfo, TribeLogEvent, extract_member_name, parse_events, parse_join_leave_notifications, parse_parasaur_notification, parse_server_join_notifications, parse_tribe_window
 from tribewatch.fuzzy import edit_distance, fuzzy_threshold, names_match
-from tribewatch.webhook import WebhookDispatcher, resolve_mention
 
 if TYPE_CHECKING:
     from tribewatch.relay import ServerRelay
@@ -105,10 +104,6 @@ def resolve_event_action(
     - ping_target: role/user ID to ping (empty = use global); ``!owner`` resolved
     - ping_member: whether to @mention the specific tribe member involved
     """
-    from tribewatch.webhook import resolve_mention
-
-    owner_id = config.discord.owner_discord_id
-    mentions = config.discord.mentions
     ev_type = event.event_type.value
     raw_text_lower = event.raw_text.lower()
 
@@ -123,8 +118,7 @@ def resolve_event_action(
         if rule.event_type == ev_type:
             if rule.text_contains and rule.text_contains.lower() not in raw_text_lower:
                 continue
-            target = resolve_mention(rule.ping_target, mentions, owner_id)
-            return rule.action, rule.severity_override or None, rule.ping, rule.discord, target, rule.ping_member
+            return rule.action, rule.severity_override or None, rule.ping, rule.discord, rule.ping_target, rule.ping_member
 
     # Fall back to built-in defaults
     default = _DEFAULT_ACTIONS.get(ev_type, "batch")
@@ -161,16 +155,8 @@ class TribeWatchApp:
         )
         self._dedup_stores: dict[str, DedupStore] = {}
         self._state_file_base: Path = Path(config.general.state_file)
-        self.dispatcher = WebhookDispatcher(
-            alert_webhook=config.discord.alert_webhook,
-            raid_webhook=config.discord.raid_webhook,
-            debug_webhook=config.discord.debug_webhook,
-            tasks_webhook=config.discord.tasks_webhook,
-            ping_role_id=config.discord.ping_role_id,
-            batch_interval=config.discord.batch_interval,
-            owner_discord_id=config.discord.owner_discord_id,
-            mentions=config.discord.mentions,
-        )
+        # Discord dispatching is server-side only — the client sends raw
+        # events over the relay websocket and the server handles webhooks.
         # Parasaur detection window (optional — only if bbox configured)
         self._parasaur_capture: ScreenCapture | None = None
         self._parasaur_lookup: dict[str, str] = {}
@@ -314,31 +300,13 @@ class TribeWatchApp:
         suffix = "_".join(parts)
         return base.with_stem(f"{base.stem}_{suffix}")
 
-    def _migrate_dedup_for_server_id(self, server_id: str) -> None:
-        """Rename dedup state files to include server_id when it first becomes known."""
-        if not server_id:
-            return
-        for tribe_name, store in list(self._dedup_stores.items()):
-            if not tribe_name:
-                continue  # generic store, will be migrated when tribe name is known
-            old_sf = store.state_file
-            new_sf = self._state_file_for(tribe_name)
-            if old_sf and new_sf and old_sf != new_sf:
-                store.state_file = new_sf
-                store.save()
-                if old_sf.exists():
-                    try:
-                        old_sf.unlink()
-                    except OSError:
-                        pass
-                log.info("Migrated dedup state %s -> %s", old_sf.name, new_sf.name)
-
     def _get_dedup(self) -> DedupStore:
         """Return the DedupStore for the currently monitored tribe.
 
         Creates a new store on first access for each tribe, using a
         per-tribe state file so that high-water marks and hash buffers
-        don't leak across tribes.
+        don't leak across tribes. Waits for server_id to be known before
+        creating a persistent state file.
         """
         tribe_name = ""
         info = getattr(self, "_tribe_info", None)
@@ -346,20 +314,23 @@ class TribeWatchApp:
             tribe_name = info.tribe_name or ""
 
         if tribe_name not in self._dedup_stores:
-            sf = self._state_file_for(tribe_name)
-            # Migrate legacy state file (without server_id) if the new path doesn't exist yet
-            if sf and not sf.exists() and tribe_name:
-                base = getattr(self, "_state_file_base", None)
-                if base:
-                    legacy_safe = re.sub(r'[<>:"/\\|?*\s]+', "_", tribe_name).strip("_").lower()
-                    legacy_sf = base.with_stem(f"{base.stem}_{legacy_safe}")
-                    if legacy_sf != sf and legacy_sf.exists():
-                        try:
-                            legacy_sf.rename(sf)
-                            log.info("Migrated state file %s -> %s", legacy_sf.name, sf.name)
-                        except OSError:
-                            pass
-            self._dedup_stores[tribe_name] = DedupStore(state_file=sf)
+            server_id = getattr(self, "_server_id", "")
+            if tribe_name and not server_id:
+                # Server ID not yet known — use in-memory only (no state file)
+                self._dedup_stores[tribe_name] = DedupStore(state_file=None)
+            else:
+                sf = self._state_file_for(tribe_name)
+                self._dedup_stores[tribe_name] = DedupStore(state_file=sf)
+        elif tribe_name:
+            # If we have a store without a state file and server_id is now known,
+            # upgrade it to use a persistent file
+            store = self._dedup_stores[tribe_name]
+            server_id = getattr(self, "_server_id", "")
+            if store.state_file is None and server_id:
+                sf = self._state_file_for(tribe_name)
+                store.state_file = sf
+                store.save()
+                log.info("Dedup store upgraded to persistent: %s", sf)
 
         return self._dedup_stores[tribe_name]
 
@@ -582,9 +553,6 @@ class TribeWatchApp:
                     # change handler does it after the user confirms.
                 else:
                     self._server_id = new_id
-                    # Migrate dedup state files when server_id first becomes known
-                    if not old_id:
-                        self._migrate_dedup_for_server_id(new_id)
                     self._server_name = new_name
         except Exception:
             pass
@@ -621,51 +589,87 @@ class TribeWatchApp:
 
         return status
 
+    _EOS_BASE_INTERVAL = 300       # 5 min normal
+    _EOS_MAX_BACKOFF = 3600        # 1 hour max between retries
+
     async def _refresh_eos_info(self) -> None:
-        """Query EOS for server info if refresh interval has elapsed."""
+        """Query EOS for server info with exponential backoff on failure."""
         server_name = getattr(self, "_server_name", "")
         if not server_name:
             return
 
         now = time.monotonic()
-        interval = getattr(self, "_EOS_REFRESH_INTERVAL", 300)
+        fail_count = getattr(self, "_eos_fail_count", 0)
+        # Exponential backoff: 5min, 10min, 20min, 40min, capped at 1hr
+        interval = min(
+            self._EOS_BASE_INTERVAL * (2 ** fail_count),
+            self._EOS_MAX_BACKOFF,
+        )
         last_query = getattr(self, "_eos_last_query", 0)
         if now - last_query < interval:
             return
 
+        self._eos_last_query = now
+
+        info = None
+
+        # Try EOS first
         try:
-            from tribewatch.eos import AsyncEOSClient, extract_server_info, parse_eos_daytime
+            from tribewatch.eos import AsyncEOSClient, extract_server_info
 
             if getattr(self, "_eos_client", None) is None:
                 self._eos_client = AsyncEOSClient()
 
             session = await self._eos_client.get_server_by_name(server_name)
-            if session is None:
-                log.debug("EOS: no session found for server %r", server_name)
-                return
-
-            info = extract_server_info(session)
-            self._eos_info = info
-            self._eos_last_query = now
-
-            log.info(
-                "EOS server info: %s — %d/%d players, map=%s, Day %s",
-                info.get("server_name", "?"),
-                info.get("total_players", 0),
-                info.get("max_players", 0),
-                info.get("map_name", "?"),
-                info.get("day", "?"),
-            )
-
-            # Feed day to dedup stores as reference for garbled-OCR rejection
-            eos_day = info.get("day")
-            if eos_day is not None:
-                for store in self._dedup_stores.values():
-                    store.set_eos_reference(eos_day, "00:00:00")
-                    store.seed_high_water_from_eos(eos_day, "00:00:00")
-
+            if session is not None:
+                info = extract_server_info(session)
+                info["source"] = "eos"
         except Exception:
-            log.warning("EOS refresh failed", exc_info=True)
+            log.debug("EOS query failed", exc_info=True)
+
+        # Fallback to BattleMetrics
+        if info is None:
+            try:
+                from tribewatch.eos import BattleMetricsClient, extract_battlemetrics_info
+
+                if getattr(self, "_bm_client", None) is None:
+                    self._bm_client = BattleMetricsClient()
+
+                bm_server = await self._bm_client.get_server_by_name(server_name)
+                if bm_server is not None:
+                    info = extract_battlemetrics_info(bm_server)
+            except Exception:
+                log.debug("BattleMetrics query failed", exc_info=True)
+
+        if info is None:
+            self._eos_fail_count = getattr(self, "_eos_fail_count", 0) + 1
+            next_interval = min(self._EOS_BASE_INTERVAL * (2 ** self._eos_fail_count), self._EOS_MAX_BACKOFF)
+            if self._eos_fail_count <= 3:
+                log.warning("Server info refresh failed (retry #%d in %ds)", self._eos_fail_count, next_interval)
+            else:
+                log.debug("Server info refresh still failing (retry #%d in %ds)", self._eos_fail_count, next_interval)
+            return
+
+        self._eos_info = info
+        self._eos_fail_count = 0
+        source = info.get("source", "?")
+
+        log.info(
+            "Server info [%s]: %s — %d/%d players, map=%s, Day %s",
+            source,
+            info.get("server_name", "?"),
+            info.get("total_players", 0),
+            info.get("max_players", 0),
+            info.get("map_name", "?"),
+            info.get("day", "?"),
+        )
+
+        # Feed day to dedup stores as reference for garbled-OCR rejection
+        eos_day = info.get("day")
+        if eos_day is not None:
+            for store in self._dedup_stores.values():
+                store.set_eos_reference(eos_day, "00:00:00")
+                store.seed_high_water_from_eos(eos_day, "00:00:00")
 
     async def _relay_heartbeat_loop(self) -> None:
         """Periodically send status to server via relay."""
@@ -911,10 +915,6 @@ class TribeWatchApp:
             log.debug("OCR returned empty text")
             return
 
-        # Send raw text to debug webhook if configured (client-side only)
-        if not self._relay and self.config.discord.debug_webhook:
-            await self.dispatcher.send_debug(text)
-
         events = parse_events(text)
         if not events:
             return
@@ -929,19 +929,22 @@ class TribeWatchApp:
         if len(events) < pre_filter:
             log.info("Parsed %d events, %d filtered as 'ignore'", pre_filter, pre_filter - len(events))
 
+        # Don't process events until tribe name and server ID are known
+        _tribe_info = getattr(self, "_tribe_info", None)
+        _tribe_name = _tribe_info.tribe_name if _tribe_info else ""
+        if not _tribe_name:
+            log.info("Skipping %d events — tribe name not yet known", len(events))
+            return
+        if not getattr(self, "_server_id", ""):
+            log.info("Skipping %d events — server ID not yet known", len(events))
+            return
+
         # Dedup
         dedup = self._get_dedup()
         new_events = dedup.filter_new(events)
         if not new_events:
             log.info("Parsed %d events, all duplicates (high water: Day %d, %s)",
                      len(events), dedup._high_water[0], dedup._high_water[1])
-            return
-
-        # Don't dispatch events until tribe name is known (e.g. after server change)
-        _tribe_info = getattr(self, "_tribe_info", None)
-        _tribe_name = _tribe_info.tribe_name if _tribe_info else ""
-        if not _tribe_name:
-            log.info("Skipping %d events — tribe name not yet known", len(new_events))
             return
 
         log.info("Dispatching %d new events", len(new_events))
@@ -969,121 +972,12 @@ class TribeWatchApp:
         for event in new_events:
             self._print_event(event)
 
-        # Discord dispatch is server-side only.  When connected via relay the
-        # server's ClientHandler._dispatch_discord() handles webhooks — the
-        # client must not duplicate that work.
-        if not self._relay:
-            await self._dispatch_discord(new_events, event_dicts)
-
         # Broadcast to browser WebSocket clients
         await self._broadcast_events(event_dicts)
 
         # Update stats
         self._events_today_count += len(new_events)
         self._total_events_count += len(new_events)
-
-    async def _dispatch_discord(
-        self, new_events: list, event_dicts: list[dict],
-    ) -> None:
-        """Client-side Discord dispatch (only used when NOT connected via relay)."""
-        # Cache tribe members once per cycle for per-member Discord pings
-        _cached_members: list[dict] | None = None
-        if self._tribe_store:
-            try:
-                _cached_members = await self._tribe_store.get_all_members()
-            except Exception:
-                log.debug("Failed to fetch tribe members for ping lookup", exc_info=True)
-
-        # Deferred escalation sends: collect all same-type events from the
-        # batch before sending, so the summary includes events that arrive
-        # after the threshold is first crossed.
-        pending_escalations: dict[str, dict] = {}
-
-        for i, event in enumerate(new_events):
-            action, severity_override, ping, discord, ping_target, ping_member = resolve_event_action(event, self.config)
-            if not discord:
-                continue
-
-            ev_type = event.event_type.value
-            rule = self._find_alert_rule(ev_type, raw_text=event.raw_text)
-            condition_label = rule.text_contains if rule else ""
-            event_line = f"Day {event.day}, {event.time}: {event.raw_text}"
-            esc, esc_texts = self._check_escalation(ev_type, rule, raw_text=event_line)
-
-            if esc == "escalate":
-                raw_esc = (rule.escalation_target if rule else "") or ping_target
-                esc_target = resolve_mention(
-                    raw_esc, self.config.discord.mentions,
-                    self.config.discord.owner_discord_id,
-                )
-                pending_escalations[ev_type] = {
-                    "texts": esc_texts,
-                    "rule": rule,
-                    "condition_label": condition_label,
-                    "esc_target": esc_target,
-                    "last_idx": i,
-                }
-                continue
-            if esc == "suppress":
-                if ev_type in pending_escalations:
-                    pending_escalations[ev_type]["texts"].append(event_line)
-                    pending_escalations[ev_type]["last_idx"] = i
-                else:
-                    log.debug("Escalation: suppressing Discord send for %s", ev_type)
-                continue
-
-            if action == "critical":
-                extra_mentions: list[str] = []
-                if ping_member and _cached_members:
-                    member_name = extract_member_name(event.raw_text, event.event_type)
-                    if member_name:
-                        extra_mentions = self._find_member_discord_ids(member_name, _cached_members)
-
-                result = await self.dispatcher.send_critical(
-                    event, ping=ping, ping_target=ping_target,
-                    extra_mentions=extra_mentions or None,
-                    condition_label=condition_label,
-                )
-                event_dicts[i]["ping_status"] = result["ping_status"]
-                event_dicts[i]["ping_detail"] = result["ping_detail"]
-                log.info(
-                    "Discord: %s → %s (%s)",
-                    ev_type, result["ping_status"], result["ping_detail"],
-                )
-
-                if event_dicts[i].get("id"):
-                    await self._update_ping(
-                        event_dicts[i]["id"],
-                        result["ping_status"],
-                        result["ping_detail"],
-                    )
-            else:
-                self.dispatcher.queue_batch(event, condition_label=condition_label)
-
-        # --- Send deferred escalation summaries ---
-        for ev_type, esc_info in pending_escalations.items():
-            rule = esc_info["rule"]
-            result = await self.dispatcher.send_escalation(
-                event_type=ev_type,
-                count=len(esc_info["texts"]),
-                window_minutes=rule.escalation_window if rule else 10,
-                ping_target=esc_info["esc_target"],
-                event_texts=esc_info["texts"],
-                condition_label=esc_info.get("condition_label", ""),
-            )
-            idx = esc_info["last_idx"]
-            event_dicts[idx]["ping_status"] = result["ping_status"]
-            event_dicts[idx]["ping_detail"] = result["ping_detail"]
-            log.info(
-                "Discord escalation: %s → %s (%s)",
-                ev_type, result["ping_status"], result["ping_detail"],
-            )
-            if event_dicts[idx].get("id"):
-                await self._update_ping(
-                    event_dicts[idx]["id"],
-                    result["ping_status"],
-                    result["ping_detail"],
-                )
 
     async def _parasaur_cycle(self) -> None:
         """Single parasaur notification capture → OCR → parse → session dispatch."""
@@ -1248,34 +1142,6 @@ class TribeWatchApp:
         for i, event in enumerate(new_events):
             self._print_event(event)
 
-        # Discord dispatch is server-side only when connected via relay
-        if not self._relay:
-            for i, event in enumerate(new_events):
-                ev_type = event.event_type.value
-                alerts = self._parasaur_alert_settings(ev_type)
-
-                if not alerts.discord or alerts.action == "ignore":
-                    continue
-
-                if alerts.action == "critical":
-                    result = await self.dispatcher.send_critical(
-                        event, ping=alerts.ping, ping_target=alerts.ping_target,
-                    )
-                    event_dicts[i]["ping_status"] = result["ping_status"]
-                    event_dicts[i]["ping_detail"] = result["ping_detail"]
-                    log.info(
-                        "Discord: %s → %s (%s)",
-                        ev_type, result["ping_status"], result["ping_detail"],
-                    )
-                    if event_dicts[i].get("id"):
-                        await self._update_ping(
-                            event_dicts[i]["id"],
-                            result["ping_status"],
-                            result["ping_detail"],
-                        )
-                else:
-                    self.dispatcher.queue_batch(event)
-
         await self._broadcast_events(event_dicts)
 
         self._events_today_count += len(new_events)
@@ -1343,15 +1209,6 @@ class TribeWatchApp:
                 discord = alerts.discord
                 ping_target = alerts.ping_target
 
-                send = action != "ignore" and discord
-                if send and not self._relay:
-                    if action == "critical":
-                        result = await self.dispatcher.send_critical(
-                            brief_event, ping=ping, ping_target=ping_target,
-                        )
-                    else:
-                        self.dispatcher.queue_batch(brief_event)
-
                 # Broadcast to browser WebSocket clients
                 await self._broadcast_events([brief_dict])
 
@@ -1393,17 +1250,6 @@ class TribeWatchApp:
                 ids = await self._store_events([clear_dict])
                 if ids:
                     clear_dict["id"] = ids[0]
-
-                # Post green embed to alert webhook (client-side only)
-                if not self._relay and self.config.discord.alert_webhook:
-                    await self.dispatcher._post_webhook(
-                        self.config.discord.alert_webhook,
-                        {"embeds": [{
-                            "title": "\u2705 " + label,
-                            "description": f"No longer detecting an enemy.\nSession duration: **{duration_str}**",
-                            "color": 0x00CC00,
-                        }]},
-                    )
 
                 # Broadcast to browser WebSocket clients
                 await self._broadcast_events([clear_dict])
@@ -1607,27 +1453,6 @@ class TribeWatchApp:
         # --- Migrate dedup store when tribe name first becomes known ---
         prev_tribe = prev_info.tribe_name if prev_info else ""
         new_tribe = info.tribe_name or ""
-        if prev_tribe == "" and new_tribe != "" and "" in self._dedup_stores:
-            old_store = self._dedup_stores.pop("")
-            old_sf = old_store.state_file
-            new_sf = self._state_file_for(new_tribe)
-            if new_sf and new_sf.exists():
-                # Named state file already exists — load it instead of overwriting
-                named_store = DedupStore(state_file=new_sf)
-                self._dedup_stores[new_tribe] = named_store
-            else:
-                # No existing file — move the generic store to the named path
-                old_store.state_file = new_sf
-                old_store.save()
-                self._dedup_stores[new_tribe] = old_store
-            # Remove the old generic state file
-            if old_sf and old_sf.exists() and old_sf != new_sf:
-                try:
-                    old_sf.unlink()
-                except OSError:
-                    pass
-            log.info("Migrated dedup state from generic to tribe '%s' (%s)", new_tribe, new_sf)
-
         # --- Transition detection & persistence ---
         # When a relay is active (standalone or client mode), the server-side
         # ClientHandler handles upsert/snapshot/stale via the tribe_info message.
@@ -1688,7 +1513,7 @@ class TribeWatchApp:
                 info.members_online,
                 info.members_total,
             )
-            if self._relay:
+            if self._relay and getattr(self, "_server_id", ""):
                 from dataclasses import asdict
                 await self._relay.send_tribe_info(asdict(info))
             if self._ws_manager:
@@ -1719,16 +1544,6 @@ class TribeWatchApp:
         if last_ok is None:
             return False
         return (time.time() - last_ok) < 300  # 5 minutes
-
-    async def _batch_flush_loop(self) -> None:
-        """Periodically flush batched non-critical events."""
-        while self._running:
-            await asyncio.sleep(self.config.discord.batch_interval)
-            try:
-                await self.dispatcher.flush_batch()
-                await self.dispatcher.flush_retries()
-            except Exception:
-                log.exception("Batch flush error")
 
     async def run(self) -> None:
         """Run the main monitoring loop."""
@@ -1765,7 +1580,17 @@ class TribeWatchApp:
                 self.config.tribe.bbox,
             )
 
-        flush_task = asyncio.create_task(self._batch_flush_loop())
+        # Resolve server_id early so events aren't skipped on first cycle
+        try:
+            from tribewatch.server_id import get_server_info
+            info = get_server_info()
+            if info["server_id"]:
+                self._server_id = info["server_id"]
+                self._server_name = info["server_name"]
+                log.info("Server ID resolved on startup: %s (%s)", self._server_id, self._server_name)
+        except Exception:
+            log.debug("Early server_id resolution failed, will retry via heartbeat")
+
         parasaur_task = None
         if self._parasaur_capture:
             parasaur_task = asyncio.create_task(self._parasaur_loop())
@@ -1789,11 +1614,6 @@ class TribeWatchApp:
                 await asyncio.sleep(self.config.tribe_log.interval)
         finally:
             self._running = False
-            flush_task.cancel()
-            try:
-                await flush_task
-            except asyncio.CancelledError:
-                pass
             if parasaur_task:
                 parasaur_task.cancel()
                 try:
@@ -1822,8 +1642,6 @@ class TribeWatchApp:
                 await idle_monitor_task
             except asyncio.CancelledError:
                 pass
-            # Final flush and save
-            await self.dispatcher.flush_batch()
             for store in self._dedup_stores.values():
                 store.save()
             self.capture.close()
@@ -1831,7 +1649,6 @@ class TribeWatchApp:
                 self._parasaur_capture.close()
             if self._tribe_capture:
                 self._tribe_capture.close()
-            await self.dispatcher.close()
             log.info("TribeWatch stopped")
 
     def stop(self) -> None:
