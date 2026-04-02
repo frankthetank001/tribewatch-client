@@ -611,46 +611,65 @@ class TribeWatchApp:
 
         self._eos_last_query = now
 
+        info = None
+
+        # Try EOS first
         try:
-            from tribewatch.eos import AsyncEOSClient, extract_server_info, parse_eos_daytime
+            from tribewatch.eos import AsyncEOSClient, extract_server_info
 
             if getattr(self, "_eos_client", None) is None:
                 self._eos_client = AsyncEOSClient()
 
             session = await self._eos_client.get_server_by_name(server_name)
-            if session is None:
-                self._eos_fail_count = getattr(self, "_eos_fail_count", 0) + 1
-                if self._eos_fail_count <= 3:
-                    log.debug("EOS: no session found for server %r (retry in %ds)", server_name, interval)
-                return
-
-            info = extract_server_info(session)
-            self._eos_info = info
-            self._eos_fail_count = 0  # reset on success
-
-            log.info(
-                "EOS server info: %s — %d/%d players, map=%s, Day %s",
-                info.get("server_name", "?"),
-                info.get("total_players", 0),
-                info.get("max_players", 0),
-                info.get("map_name", "?"),
-                info.get("day", "?"),
-            )
-
-            # Feed day to dedup stores as reference for garbled-OCR rejection
-            eos_day = info.get("day")
-            if eos_day is not None:
-                for store in self._dedup_stores.values():
-                    store.set_eos_reference(eos_day, "00:00:00")
-                    store.seed_high_water_from_eos(eos_day, "00:00:00")
-
+            if session is not None:
+                info = extract_server_info(session)
+                info["source"] = "eos"
         except Exception:
+            log.debug("EOS query failed", exc_info=True)
+
+        # Fallback to BattleMetrics
+        if info is None:
+            try:
+                from tribewatch.eos import BattleMetricsClient, extract_battlemetrics_info
+
+                if getattr(self, "_bm_client", None) is None:
+                    self._bm_client = BattleMetricsClient()
+
+                bm_server = await self._bm_client.get_server_by_name(server_name)
+                if bm_server is not None:
+                    info = extract_battlemetrics_info(bm_server)
+            except Exception:
+                log.debug("BattleMetrics query failed", exc_info=True)
+
+        if info is None:
             self._eos_fail_count = getattr(self, "_eos_fail_count", 0) + 1
             next_interval = min(self._EOS_BASE_INTERVAL * (2 ** self._eos_fail_count), self._EOS_MAX_BACKOFF)
             if self._eos_fail_count <= 3:
-                log.warning("EOS refresh failed (retry #%d in %ds)", self._eos_fail_count, next_interval, exc_info=True)
+                log.warning("Server info refresh failed (retry #%d in %ds)", self._eos_fail_count, next_interval)
             else:
-                log.debug("EOS refresh still failing (retry #%d in %ds)", self._eos_fail_count, next_interval)
+                log.debug("Server info refresh still failing (retry #%d in %ds)", self._eos_fail_count, next_interval)
+            return
+
+        self._eos_info = info
+        self._eos_fail_count = 0
+        source = info.get("source", "?")
+
+        log.info(
+            "Server info [%s]: %s — %d/%d players, map=%s, Day %s",
+            source,
+            info.get("server_name", "?"),
+            info.get("total_players", 0),
+            info.get("max_players", 0),
+            info.get("map_name", "?"),
+            info.get("day", "?"),
+        )
+
+        # Feed day to dedup stores as reference for garbled-OCR rejection
+        eos_day = info.get("day")
+        if eos_day is not None:
+            for store in self._dedup_stores.values():
+                store.set_eos_reference(eos_day, "00:00:00")
+                store.seed_high_water_from_eos(eos_day, "00:00:00")
 
     async def _relay_heartbeat_loop(self) -> None:
         """Periodically send status to server via relay."""

@@ -98,6 +98,56 @@ class AsyncEOSClient:
         return max(sessions, key=lambda s: s.get("totalPlayers", 0))
 
 
+class BattleMetricsClient:
+    """Fallback server query via BattleMetrics public API (no auth required)."""
+
+    SEARCH_URL = "https://api.battlemetrics.com/servers"
+
+    async def get_server_by_name(self, name: str) -> dict | None:
+        """Find an ARK:SA server by name. Returns server dict or None."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    self.SEARCH_URL,
+                    params={
+                        "filter[game]": "arksa",
+                        "filter[search]": name,
+                        "page[size]": "5",
+                    },
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status != 200:
+                        log.debug("BattleMetrics API returned %d", resp.status)
+                        return None
+                    data = await resp.json()
+                    servers = data.get("data", [])
+                    if not servers:
+                        return None
+                    # Find exact name match, prefer online
+                    for s in servers:
+                        if s.get("attributes", {}).get("name") == name:
+                            return s
+                    return servers[0]  # best guess
+        except Exception:
+            log.debug("BattleMetrics query failed", exc_info=True)
+            return None
+
+
+def extract_battlemetrics_info(server: dict) -> dict:
+    """Pull structured info from a BattleMetrics server dict."""
+    attrs = server.get("attributes", {})
+    details = attrs.get("details", {})
+    return {
+        "day": details.get("time_i"),
+        "total_players": attrs.get("players", 0),
+        "max_players": attrs.get("maxPlayers", 0),
+        "map_name": details.get("map", ""),
+        "server_name": attrs.get("name", ""),
+        "status": attrs.get("status", ""),
+        "source": "battlemetrics",
+    }
+
+
 def parse_eos_daytime(raw: str) -> int | None:
     """Parse DAYTIME_s into an in-game day number, or None.
 
