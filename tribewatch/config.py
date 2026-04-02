@@ -59,7 +59,6 @@ class AlertsConfig:
     # Presence alerts (consolidated from former [presence] section)
     offline_webhook: bool = False  # Discord alert on client offline
     online_webhook: bool = False  # Discord alert on client back online
-    idle_webhook: bool = True  # Discord alert when client stops monitoring
     presence_webhook_url: str = ""  # empty = use discord.alert_webhook
 
 
@@ -161,10 +160,10 @@ class ServerConfig:
 
 @dataclass
 class PresenceConfig:
-    offline_webhook: bool = False  # Discord alert on client offline
-    online_webhook: bool = False  # Discord alert on client back online
-    idle_webhook: bool = True  # Discord alert when client stops monitoring (after idle_alert_minutes)
-    webhook_url: str = ""  # empty = use discord.alert_webhook
+    """Legacy — presence fields now live in AlertsConfig. Kept for backward compat."""
+    offline_webhook: bool = False
+    online_webhook: bool = False
+    webhook_url: str = ""
 
 
 @dataclass
