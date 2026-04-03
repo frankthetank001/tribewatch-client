@@ -124,11 +124,16 @@ class _OverlayApp:
         self,
         instruction: str = "Click and drag to select the region. Press Escape to cancel.",
         existing_bboxes: dict[str, list[int]] | None = None,
+        prompt: str | None = None,
+        action_label: str | None = None,
+        action_callback: callable | None = None,
     ) -> None:
         self.result: Optional[list[int]] = None
         self._start_x = 0
         self._start_y = 0
         self._rect_id: Optional[int] = None
+        self._kept = False  # True if user clicked "Keep Current"
+        self._instruction = instruction
 
         self.root = tk.Tk()
         self.root.title("TribeWatch Calibration")
@@ -138,17 +143,19 @@ class _OverlayApp:
         self.root.configure(background="black")
         self.root.overrideredirect(True)
 
-        # Canvas fills the whole screen
+        # Canvas fills the whole screen — start with default cursor;
+        # switch to crosshair only when drawing is enabled.
         self.canvas = tk.Canvas(
-            self.root, bg="black", highlightthickness=0, cursor="crosshair"
+            self.root, bg="black", highlightthickness=0,
+            cursor="arrow" if prompt else "crosshair",
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Instruction text
-        self.canvas.create_text(
+        # Instruction text (hidden in prompt mode — shown in the prompt dialog instead)
+        self._instruction_id = self.canvas.create_text(
             self.root.winfo_screenwidth() // 2,
             40,
-            text=instruction,
+            text="" if prompt else instruction,
             fill="white",
             font=("Segoe UI", 18, "bold"),
         )
@@ -174,7 +181,131 @@ class _OverlayApp:
                     anchor="sw",
                 )
 
-        # Bindings
+        # If prompt mode, show a dialog frame on the overlay instead of
+        # enabling drawing immediately.  User picks Re-draw or Keep Current.
+        self._prompt_widgets: list[int | tk.Widget] = []
+        if prompt:
+            self._show_overlay_prompt(prompt, action_label, action_callback)
+        else:
+            self._enable_drawing()
+
+    def _show_overlay_prompt(
+        self,
+        prompt: str,
+        action_label: str | None = None,
+        action_callback: callable | None = None,
+    ) -> None:
+        """Show a prompt with Re-draw / Keep Current buttons on the overlay.
+
+        Uses a separate Toplevel window so buttons aren't affected by the
+        overlay's alpha transparency.
+        """
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+
+        # Create an opaque popup window on top of the transparent overlay
+        self._prompt_win = tk.Toplevel(self.root)
+        self._prompt_win.overrideredirect(True)
+        self._prompt_win.attributes("-topmost", True)
+        self._prompt_win.configure(bg="#1a1a1a")
+
+        win_w = 650
+        win_h = 330 if action_label else 280
+        x = (sw - win_w) // 2
+        y = (sh - win_h) // 2
+        self._prompt_win.geometry(f"{win_w}x{win_h}+{x}+{y}")
+
+        # Gold border effect via inner frame
+        border = tk.Frame(self._prompt_win, bg="#FFD700", padx=3, pady=3)
+        border.pack(fill=tk.BOTH, expand=True)
+        inner = tk.Frame(border, bg="#1a1a1a", padx=25, pady=20)
+        inner.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            inner, text=prompt, fg="white", bg="#1a1a1a",
+            font=("Segoe UI", 16, "bold"), wraplength=580, justify="center",
+        ).pack(pady=(10, 20))
+
+        # Action button row (e.g. "Open Tribe Log")
+        if action_label and action_callback:
+            def _on_action(cb=action_callback) -> None:
+                # Hide overlay + prompt so the game can receive the key
+                self._prompt_win.grab_release()
+                self._prompt_win.withdraw()
+                self.root.withdraw()
+                self.root.update()
+                cb()
+                import time
+                time.sleep(0.5)
+                # Bring overlay + prompt back
+                self.root.deiconify()
+                self._prompt_win.deiconify()
+                self._prompt_win.lift()
+                self._prompt_win.focus_force()
+                self._prompt_win.grab_set()
+
+            tk.Button(
+                inner, text=action_label, width=20,
+                font=("Segoe UI", 12, "bold"),
+                bg="#225522", fg="white", activebackground="#337733",
+                relief=tk.RAISED, bd=2, padx=10, pady=4,
+                command=_on_action,
+            ).pack(pady=(0, 15))
+
+        btn_frame = tk.Frame(inner, bg="#1a1a1a")
+        btn_frame.pack()
+
+        tk.Button(
+            btn_frame, text="Re-draw", width=16,
+            font=("Segoe UI", 14, "bold"),
+            bg="#444444", fg="white", activebackground="#666666",
+            relief=tk.RAISED, bd=2, padx=10, pady=6,
+            command=self._on_prompt_redraw,
+        ).pack(side=tk.LEFT, padx=15)
+        tk.Button(
+            btn_frame, text="Keep Current", width=16,
+            font=("Segoe UI", 14, "bold"),
+            bg="#444444", fg="white", activebackground="#666666",
+            relief=tk.RAISED, bd=2, padx=10, pady=6,
+            command=self._on_prompt_keep,
+        ).pack(side=tk.LEFT, padx=15)
+
+        # Escape hint
+        tk.Label(
+            inner, text="Press Escape to keep current",
+            fg="#888888", bg="#1a1a1a",
+            font=("Segoe UI", 10, "italic"),
+        ).pack(pady=(10, 0))
+
+        # Drop topmost from overlay so the prompt can sit above it at the OS level
+        self.root.attributes("-topmost", False)
+        self._prompt_win.lift()
+        self._prompt_win.focus_force()
+        self._prompt_win.grab_set()
+
+        # Bind Escape on the prompt window to keep current
+        self._prompt_win.bind("<Escape>", lambda e: self._on_prompt_keep())
+
+    def _on_prompt_redraw(self) -> None:
+        """User chose Re-draw — remove prompt and enable drawing."""
+        if hasattr(self, "_prompt_win"):
+            self._prompt_win.destroy()
+        self.root.attributes("-topmost", True)
+        # Show the instruction text now that we're in draw mode
+        self.canvas.itemconfigure(self._instruction_id, text=self._instruction)
+        self._enable_drawing()
+
+    def _on_prompt_keep(self) -> None:
+        """User chose Keep Current — close everything, return None."""
+        self._kept = True
+        self.result = None
+        if hasattr(self, "_prompt_win"):
+            self._prompt_win.destroy()
+        self.root.destroy()
+
+    def _enable_drawing(self) -> None:
+        """Bind mouse events for drag-to-select."""
+        self.canvas.configure(cursor="crosshair")
         self.canvas.bind("<ButtonPress-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
@@ -213,29 +344,8 @@ class _OverlayApp:
             return
 
         bbox = [left, top, right, bottom]
-        self.root.withdraw()  # hide overlay for the dialog
-
-        # Confirmation dialog
-        answer = messagebox.askyesnocancel(
-            "Confirm Region",
-            f"Selected region: {bbox}\n\n"
-            f"Width: {right - left}px, Height: {bottom - top}px\n\n"
-            "Yes = accept, No = retry, Cancel = abort",
-        )
-
-        if answer is True:
-            self.result = bbox
-            self.root.destroy()
-        elif answer is False:
-            # Retry — show overlay again
-            if self._rect_id is not None:
-                self.canvas.delete(self._rect_id)
-                self._rect_id = None
-            self.root.deiconify()
-        else:
-            # Cancel
-            self.result = None
-            self.root.destroy()
+        self.result = bbox
+        self.root.destroy()
 
     def _on_escape(self, event: tk.Event) -> None:
         self.result = None
@@ -249,8 +359,11 @@ class _OverlayApp:
 def run_overlay(
     instruction: str | None = None,
     existing_bboxes: dict[str, list[int]] | None = None,
-) -> Optional[list[int]]:
-    """Launch the calibration overlay and return [left, top, right, bottom] or None.
+    prompt: str | None = None,
+    action_label: str | None = None,
+    action_callback: callable | None = None,
+) -> tuple[Optional[list[int]], bool]:
+    """Launch the calibration overlay and return (bbox, kept).
 
     Parameters
     ----------
@@ -260,6 +373,18 @@ def run_overlay(
     existing_bboxes:
         Mapping of label → [left, top, right, bottom] for regions to display
         as colored reference rectangles on the overlay.
+    prompt:
+        If set, show Re-draw / Keep Current buttons on the overlay instead
+        of enabling drawing immediately.
+    action_label:
+        Label for an extra action button on the prompt (e.g. "Open Tribe Log").
+    action_callback:
+        Callback invoked when the action button is clicked.
+
+    Returns
+    -------
+    (bbox, kept) — bbox is the selected region or None; kept is True if the
+    user clicked "Keep Current".
     """
     if tk is None:
         raise RuntimeError(
@@ -271,5 +396,11 @@ def run_overlay(
         kwargs["instruction"] = instruction
     if existing_bboxes is not None:
         kwargs["existing_bboxes"] = existing_bboxes
+    if prompt is not None:
+        kwargs["prompt"] = prompt
+    if action_label is not None:
+        kwargs["action_label"] = action_label
+    if action_callback is not None:
+        kwargs["action_callback"] = action_callback
     app = _OverlayApp(**kwargs)
-    return app.run()
+    return app.run(), app._kept
