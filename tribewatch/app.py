@@ -943,8 +943,8 @@ class TribeWatchApp:
         dedup = self._get_dedup()
         new_events = dedup.filter_new(events)
         if not new_events:
-            log.info("Parsed %d events, all duplicates (high water: Day %d, %s)",
-                     len(events), dedup._high_water[0], dedup._high_water[1])
+            log.debug("Parsed %d events, all duplicates (high water: Day %d, %s)",
+                      len(events), dedup._high_water[0], dedup._high_water[1])
             return
 
         log.info("Dispatching %d new events", len(new_events))
