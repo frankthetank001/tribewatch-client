@@ -261,6 +261,11 @@ def run_overlay(
         Mapping of label → [left, top, right, bottom] for regions to display
         as colored reference rectangles on the overlay.
     """
+    if tk is None:
+        raise RuntimeError(
+            "tkinter is not available — cannot open the calibration overlay. "
+            "Reinstall TribeWatch or install Python with tkinter support."
+        )
     kwargs: dict = {}
     if instruction is not None:
         kwargs["instruction"] = instruction

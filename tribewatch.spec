@@ -42,7 +42,7 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'tkinter', 'matplotlib', 'scipy', 'pandas',
+        'matplotlib', 'scipy', 'pandas',
         # EasyOCR + its heavy deps (optional engine, not shipped in installer)
         'easyocr', 'torch', 'torchvision',
         'skimage', 'sympy',
