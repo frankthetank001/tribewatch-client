@@ -1,0 +1,42 @@
+name: Dev Build
+
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install pyinstaller
+
+      - name: Stamp dev version
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          sed -i "s/__version__ = .*/__version__ = \"dev-${SHORT_SHA}\"/" tribewatch/__init__.py
+
+      - name: Build exe
+        run: python build.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TribeWatch-dev-${{ github.sha }}
+          path: dist/TribeWatch/
+          retention-days: 14
