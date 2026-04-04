@@ -34,6 +34,7 @@ class _TokenHandler(BaseHTTPRequestHandler):
                 _TokenHandler.token = token
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html")
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(
                     b"<!DOCTYPE html><html><head><title>TribeWatch</title>"
