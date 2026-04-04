@@ -521,6 +521,32 @@ class ReconnectSequence:
                 )
                 return "retry"
 
+        # --- Stage 3b: Easter/event workaround — extra JOIN button(s) ---
+        # Some events add confirmation dialogs with "JOIN" buttons after
+        # clicking JOIN LAST SESSION.  Keep clicking while visible.
+        await asyncio.sleep(5)
+        for _extra in range(5):
+            hwnd = _find_window_by_title(self._window_title) or hwnd
+            img = _grab_window(hwnd, bbox=None)
+            if not img:
+                break
+            extra_join = self._find_exact_text_coords(img, "JOIN")
+            if not extra_join:
+                break
+            await self._report(
+                "clicking_join",
+                f"Extra JOIN button detected at ({extra_join[0]}, {extra_join[1]}) — clicking it",
+            )
+            await asyncio.sleep(2)
+            focus_window(self._window_title)
+            await asyncio.sleep(0.3)
+            point = (ctypes.c_long * 2)(extra_join[0], extra_join[1])
+            ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point))
+            pyautogui.moveTo(point[0], point[1])
+            await asyncio.sleep(0.5)
+            pyautogui.click(point[0], point[1])
+            await asyncio.sleep(3)
+
         # --- Stage 4: Wait for game to load ---
         await self._report("waiting_load", "Waiting for game to load...")
         elapsed = 0.0
@@ -717,6 +743,26 @@ class ReconnectSequence:
         self._click_at(join_coords[0], join_coords[1], pyautogui)
         await asyncio.sleep(1)
         await self._report("clicking_join_browser", "Clicked JOIN in server browser")
+
+        # Step 8c: Easter/event workaround — extra JOIN button(s)
+        await asyncio.sleep(5)
+        for _extra in range(5):
+            hwnd = _find_window_by_title(self._window_title)
+            if not hwnd:
+                break
+            img = _grab_window(hwnd, bbox=None)
+            if not img:
+                break
+            extra_join = self._find_exact_text_coords(img, "JOIN")
+            if not extra_join:
+                break
+            await self._report(
+                "clicking_join_browser",
+                f"Extra JOIN button detected at ({extra_join[0]}, {extra_join[1]}) — clicking it",
+            )
+            await asyncio.sleep(2)
+            self._click_at(extra_join[0], extra_join[1], pyautogui)
+            await asyncio.sleep(3)
 
         # Step 9: Wait for game to load (menu text disappears)
         await self._report("waiting_load", "Waiting for game to load...")
