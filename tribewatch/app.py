@@ -219,6 +219,8 @@ class TribeWatchApp:
         self._screen_still_since: float | None = None  # time.time() when screen became static
         self._screen_change_pct: float = 100.0  # last measured change % (0-100)
         self._active_play: bool = False  # True when screen is changing (user playing)
+        self._active_play_still_count: int = 0  # consecutive still frames before clearing active_play
+        _ACTIVE_PLAY_COOLDOWN: int = 5  # require 5 consecutive still frames (~10s) to exit active play
         self._idle_recovery_attempted: bool = False  # prevents repeated recovery attempts
         self._auto_reconnect_cb = None  # callback set by __main__.py
         self._on_server_change_cb = None  # callback set by __main__.py
@@ -859,13 +861,24 @@ class TribeWatchApp:
         # Active play detection — skip OCR when the screen is changing
         # (user is actively playing). Tribe window captures (connect/disconnect)
         # still run on their own 30s loop.
+        # Enters immediately on first movement, but requires 5 consecutive
+        # still frames (~10s) before exiting to avoid flapping.
         was_active = self._active_play
-        self._active_play = self._screen_change_pct >= 2.0
+        screen_moving = self._screen_change_pct >= 2.0
+        if screen_moving:
+            self._active_play = True
+            self._active_play_still_count = 0
+        elif self._active_play:
+            self._active_play_still_count += 1
+            if self._active_play_still_count >= self._ACTIVE_PLAY_COOLDOWN:
+                self._active_play = False
+                self._active_play_still_count = 0
         if self._active_play and not was_active:
             log.info("Active play detected (%.1f%% change) — pausing tribe log & parasaur OCR",
                      self._screen_change_pct)
         elif not self._active_play and was_active:
-            log.info("Screen still — resuming tribe log & parasaur OCR")
+            log.info("Screen still for %ds — resuming tribe log & parasaur OCR",
+                     self._ACTIVE_PLAY_COOLDOWN * int(self.config.tribe_log.interval))
         if self._active_play:
             return
 
