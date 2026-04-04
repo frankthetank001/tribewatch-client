@@ -218,6 +218,7 @@ class TribeWatchApp:
         self._prev_thumb = None  # previous capture thumbnail for change detection
         self._screen_still_since: float | None = None  # time.time() when screen became static
         self._screen_change_pct: float = 100.0  # last measured change % (0-100)
+        self._active_play: bool = False  # True when screen is changing (user playing)
         self._idle_recovery_attempted: bool = False  # prevents repeated recovery attempts
         self._auto_reconnect_cb = None  # callback set by __main__.py
         self._on_server_change_cb = None  # callback set by __main__.py
@@ -565,9 +566,10 @@ class TribeWatchApp:
         except Exception:
             pass
 
-        # Idle screen detection
+        # Idle screen / active play detection
         status["screen_still_since"] = getattr(self, "_screen_still_since", None)
         status["screen_change_pct"] = getattr(self, "_screen_change_pct", 100.0)
+        status["active_play"] = getattr(self, "_active_play", False)
 
         # Component health
         status["components"] = {
@@ -854,6 +856,19 @@ class TribeWatchApp:
                 self._screen_still_since = None  # screen is active
         self._prev_thumb = thumb
 
+        # Active play detection — skip OCR when the screen is changing
+        # (user is actively playing). Tribe window captures (connect/disconnect)
+        # still run on their own 30s loop.
+        was_active = self._active_play
+        self._active_play = self._screen_change_pct >= 2.0
+        if self._active_play and not was_active:
+            log.info("Active play detected (%.1f%% change) — pausing tribe log & parasaur OCR",
+                     self._screen_change_pct)
+        elif not self._active_play and was_active:
+            log.info("Screen still — resuming tribe log & parasaur OCR")
+        if self._active_play:
+            return
+
         # Save last capture for debugging
         _debug_dir = Path("debug")
         _debug_dir.mkdir(exist_ok=True)
@@ -982,6 +997,11 @@ class TribeWatchApp:
     async def _parasaur_cycle(self) -> None:
         """Single parasaur notification capture → OCR → parse → session dispatch."""
         if self._paused or self._parasaur_capture is None:
+            return
+        # Skip capture/OCR during active play — still check session timers below
+        if self._active_play:
+            await self._check_parasaur_grace()
+            await self._check_parasaur_clears()
             return
         tribe_info = getattr(self, "_tribe_info", None)
         if tribe_info is None or not tribe_info.tribe_name:
