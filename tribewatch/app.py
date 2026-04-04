@@ -714,9 +714,9 @@ class TribeWatchApp:
             if self._paused or not self._log_header_visible:
                 continue
 
-            # Skip if the screen is actively changing — user is playing
-            if self._screen_still_since is None:
-                log.debug("Tribe log refresh: skipped — screen is active (user playing)")
+            # Skip if user is actively playing (with hysteresis)
+            if self._active_play:
+                log.debug("Tribe log refresh: skipped — active play detected")
                 continue
 
             window_title = self.config.general.window_title
