@@ -67,8 +67,8 @@ def build_exe() -> bool:
     return True
 
 
-def build_installer() -> bool:
-    """Run Inno Setup to produce dist/TribeWatch-Setup.exe."""
+def build_installer(iss_file: str = "installer.iss") -> bool:
+    """Run Inno Setup to produce the installer exe."""
     iscc = shutil.which("iscc")
     if not iscc:
         # Try common Inno Setup install paths
@@ -85,26 +85,23 @@ def build_installer() -> bool:
         print("The PyInstaller build is available at dist/TribeWatch/")
         return False
 
-    version = get_version()
-    update_inno_version(version)
-
-    print(f"Building installer with Inno Setup...")
+    print(f"Building installer with Inno Setup ({iss_file})...")
     result = subprocess.run(
-        [iscc, os.path.join(ROOT, "installer.iss")],
+        [iscc, os.path.join(ROOT, iss_file)],
         cwd=ROOT,
     )
     if result.returncode != 0:
         print("Inno Setup failed!")
         return False
 
-    installer = os.path.join(ROOT, "dist", "TribeWatch-Setup.exe")
-    print(f"Installer ready: {installer}")
+    print("Installer ready in dist/")
     return True
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build TribeWatch")
     parser.add_argument("--installer", action="store_true", help="Also build Inno Setup installer")
+    parser.add_argument("--iss", default="installer.iss", help="Inno Setup script file (default: installer.iss)")
     parser.add_argument("--version", action="store_true", help="Print version and exit")
     args = parser.parse_args()
 
@@ -116,7 +113,7 @@ def main() -> None:
         sys.exit(1)
 
     if args.installer:
-        if not build_installer():
+        if not build_installer(args.iss):
             sys.exit(1)
 
     print("\nDone!")

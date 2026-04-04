@@ -41,7 +41,7 @@ jobs:
           echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
       - name: Build exe and installer
-        run: python build.py --installer
+        run: python build.py --installer --iss installer-dev.iss
 
       - name: Create ZIP archive of portable build
         shell: pwsh
@@ -62,5 +62,5 @@ jobs:
           prerelease: true
           make_latest: false
           files: |
-            dist/TribeWatch-Setup.exe
+            dist/TribeWatch-Dev-Setup.exe
             dist/TribeWatch-${{ steps.version.outputs.version }}-portable.zip

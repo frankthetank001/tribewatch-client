@@ -17,7 +17,8 @@ log = logging.getLogger(__name__)
 GITHUB_REPO = "frankthetank001/tribewatch-client"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 DEV_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/dev-latest"
-ASSET_NAME = "TribeWatch-Setup.exe"
+ASSET_NAME_STABLE = "TribeWatch-Setup.exe"
+ASSET_NAME_DEV = "TribeWatch-Dev-Setup.exe"
 
 
 def _is_dev_version() -> bool:
@@ -65,7 +66,7 @@ async def _check_dev_update() -> dict | None:
         # Find the installer asset
         download_url = None
         for asset in data.get("assets", []):
-            if asset["name"] == ASSET_NAME:
+            if asset["name"] == ASSET_NAME_DEV:
                 download_url = asset["browser_download_url"]
                 break
 
@@ -108,7 +109,7 @@ async def _check_stable_update() -> dict | None:
         # Find the installer asset
         download_url = None
         for asset in data.get("assets", []):
-            if asset["name"] == ASSET_NAME:
+            if asset["name"] == ASSET_NAME_STABLE:
                 download_url = asset["browser_download_url"]
                 break
 
@@ -145,7 +146,8 @@ async def download_and_run_installer(download_url: str) -> bool:
     """Download the installer to a temp file and launch it."""
     try:
         tmp_dir = tempfile.mkdtemp(prefix="tribewatch_update_")
-        installer_path = os.path.join(tmp_dir, ASSET_NAME)
+        asset_name = ASSET_NAME_DEV if _is_dev_version() else ASSET_NAME_STABLE
+        installer_path = os.path.join(tmp_dir, asset_name)
 
         log.info("Downloading update from %s", download_url)
         async with aiohttp.ClientSession() as session:
