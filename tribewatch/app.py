@@ -220,7 +220,7 @@ class TribeWatchApp:
         self._screen_change_pct: float = 100.0  # last measured change % (0-100)
         self._active_play: bool = False  # True when screen is changing (user playing)
         self._active_play_still_count: int = 0  # consecutive still frames before clearing active_play
-        _ACTIVE_PLAY_COOLDOWN: int = 5  # require 5 consecutive still frames (~10s) to exit active play
+        self._ACTIVE_PLAY_COOLDOWN: int = 5  # require 5 consecutive still frames (~10s) to exit active play
         self._idle_recovery_attempted: bool = False  # prevents repeated recovery attempts
         self._auto_reconnect_cb = None  # callback set by __main__.py
         self._on_server_change_cb = None  # callback set by __main__.py
