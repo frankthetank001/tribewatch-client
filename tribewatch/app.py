@@ -876,6 +876,9 @@ class TribeWatchApp:
         if self._active_play and not was_active:
             log.info("Active play detected (%.1f%% change) — pausing tribe log & parasaur OCR",
                      self._screen_change_pct)
+            # Mark tribe log as not visible — we're no longer monitoring it
+            self._log_header_visible = False
+            self._log_visible_since = None
         elif not self._active_play and was_active:
             log.info("Screen still for %ds — resuming tribe log & parasaur OCR",
                      self._ACTIVE_PLAY_COOLDOWN * int(self.config.tribe_log.interval))
