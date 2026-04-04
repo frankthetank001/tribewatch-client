@@ -5,7 +5,7 @@ on:
     branches: [dev]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -25,18 +25,42 @@ jobs:
           pip install -e .
           pip install pyinstaller
 
-      - name: Stamp dev version
+      - name: Generate dev version
+        id: version
         shell: bash
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
-          sed -i "s/__version__ = .*/__version__ = \"dev-${SHORT_SHA}\"/" tribewatch/__init__.py
+          VERSION="dev-${SHORT_SHA}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          sed -i "s/__version__ = .*/__version__ = \"${VERSION}\"/" tribewatch/__init__.py
 
-      - name: Build exe
-        run: python build.py
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Build exe and installer
+        run: python build.py --installer
+
+      - name: Create ZIP archive of portable build
+        shell: pwsh
+        run: Compress-Archive -Path dist\TribeWatch\* -DestinationPath dist\TribeWatch-${{ steps.version.outputs.version }}-portable.zip
+
+      - name: Create or update dev pre-release
+        uses: softprops/action-gh-release@v2
         with:
-          name: TribeWatch-dev-${{ github.sha }}
-          path: dist/TribeWatch/
-          retention-days: 14
+          tag_name: dev-latest
+          name: "Dev Build (${{ steps.version.outputs.version }})"
+          body: |
+            Automated dev build from `dev` branch.
+
+            **Commit:** ${{ github.sha }}
+            **Version:** `${{ steps.version.outputs.version }}`
+
+            This pre-release is updated on every push to dev.
+          prerelease: true
+          make_latest: false
+          files: |
+            dist/TribeWatch-Setup.exe
+            dist/TribeWatch-${{ steps.version.outputs.version }}-portable.zip
