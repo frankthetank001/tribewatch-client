@@ -134,6 +134,11 @@ class _OverlayApp:
         self._rect_id: Optional[int] = None
         self._kept = False  # True if user clicked "Keep Current"
         self._instruction = instruction
+        # Check if any existing bbox is tagged "(current)" — meaning the
+        # user already has a calibration for this step and can keep it.
+        self._has_current = any(
+            "(current)" in lbl for lbl in (existing_bboxes or {})
+        )
 
         self.root = tk.Tk()
         self.root.title("TribeWatch Calibration")
@@ -210,7 +215,9 @@ class _OverlayApp:
         self._prompt_win.configure(bg="#1a1a1a")
 
         win_w = 650
-        win_h = 330 if action_label else 280
+        has_action = action_label and action_callback
+        has_keep = self._has_current
+        win_h = 280 + (50 if has_action else 0) + (0 if has_keep else -40)
         x = (sw - win_w) // 2
         y = (sh - win_h) // 2
         self._prompt_win.geometry(f"{win_w}x{win_h}+{x}+{y}")
@@ -255,27 +262,45 @@ class _OverlayApp:
         btn_frame = tk.Frame(inner, bg="#1a1a1a")
         btn_frame.pack()
 
-        tk.Button(
-            btn_frame, text="Re-draw", width=16,
-            font=("Segoe UI", 14, "bold"),
-            bg="#444444", fg="white", activebackground="#666666",
-            relief=tk.RAISED, bd=2, padx=10, pady=6,
-            command=self._on_prompt_redraw,
-        ).pack(side=tk.LEFT, padx=15)
-        tk.Button(
-            btn_frame, text="Keep Current", width=16,
-            font=("Segoe UI", 14, "bold"),
-            bg="#444444", fg="white", activebackground="#666666",
-            relief=tk.RAISED, bd=2, padx=10, pady=6,
-            command=self._on_prompt_keep,
-        ).pack(side=tk.LEFT, padx=15)
+        if self._has_current:
+            # Existing calibration — offer Re-draw or Keep Current
+            tk.Button(
+                btn_frame, text="Re-draw", width=16,
+                font=("Segoe UI", 14, "bold"),
+                bg="#444444", fg="white", activebackground="#666666",
+                relief=tk.RAISED, bd=2, padx=10, pady=6,
+                command=self._on_prompt_redraw,
+            ).pack(side=tk.LEFT, padx=15)
+            tk.Button(
+                btn_frame, text="Keep Current", width=16,
+                font=("Segoe UI", 14, "bold"),
+                bg="#444444", fg="white", activebackground="#666666",
+                relief=tk.RAISED, bd=2, padx=10, pady=6,
+                command=self._on_prompt_keep,
+            ).pack(side=tk.LEFT, padx=15)
 
-        # Escape hint
-        tk.Label(
-            inner, text="Press Escape to keep current",
-            fg="#888888", bg="#1a1a1a",
-            font=("Segoe UI", 10, "italic"),
-        ).pack(pady=(10, 0))
+            # Escape hint
+            tk.Label(
+                inner, text="Press Escape to keep current",
+                fg="#888888", bg="#1a1a1a",
+                font=("Segoe UI", 10, "italic"),
+            ).pack(pady=(10, 0))
+        else:
+            # New region — just a Draw button
+            tk.Button(
+                btn_frame, text="Draw", width=16,
+                font=("Segoe UI", 14, "bold"),
+                bg="#444444", fg="white", activebackground="#666666",
+                relief=tk.RAISED, bd=2, padx=10, pady=6,
+                command=self._on_prompt_redraw,
+            ).pack(padx=15)
+
+            # Escape hint
+            tk.Label(
+                inner, text="Press Escape to skip",
+                fg="#888888", bg="#1a1a1a",
+                font=("Segoe UI", 10, "italic"),
+            ).pack(pady=(10, 0))
 
         # Drop topmost from overlay so the prompt can sit above it at the OS level
         self.root.attributes("-topmost", False)

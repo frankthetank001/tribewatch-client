@@ -239,8 +239,8 @@ def cmd_setup(config_path: Path) -> None:
             "description": "The tribe member list showing online/offline status.",
             "prompt_msg": "Make sure to INCLUDE your tribe name at the top of the capture region.",
             "preview_name": "tribe_calibration_preview.png",
-            "action_label": "Open Tribe Manager",
-            "action_callback": _send_game_key("l"),
+            "action_label": None,
+            "action_callback": None,
         },
     ]
 
@@ -280,15 +280,6 @@ def cmd_setup(config_path: Path) -> None:
 
         draw_instruction = f"Draw a rectangle over the {label} region."
 
-        # For new regions, show a prep prompt first then focus the game
-        if not existing_bbox:
-            _show_prompt(
-                f"Step {i}/{total}: {label}",
-                f"{prompt_msg}\n\n{draw_instruction}",
-                action_label=action_label,
-                action_callback=action_callback,
-            )
-
         _focus_game_window(config_path)
 
         # Build existing_bboxes for overlay: all configured regions except current step
@@ -299,10 +290,10 @@ def cmd_setup(config_path: Path) -> None:
             else:
                 overlay_bboxes[other_label] = other_bbox
 
-        # If existing region, show Re-draw/Keep buttons on the overlay
-        overlay_prompt: str | None = None
-        if existing_bbox:
-            overlay_prompt = f"{prompt_msg}\n\n{draw_instruction}"
+        # Always show the prompt dialog on the overlay so action buttons
+        # (e.g. "Open Tribe Log") are available.  When an existing bbox is
+        # present the dialog also offers Re-draw / Keep Current.
+        overlay_prompt = f"{prompt_msg}\n\n{draw_instruction}"
 
         try:
             from tribewatch.calibrate import run_overlay
@@ -311,8 +302,8 @@ def cmd_setup(config_path: Path) -> None:
                 instruction=draw_instruction,
                 existing_bboxes=overlay_bboxes if overlay_bboxes else None,
                 prompt=overlay_prompt,
-                action_label=action_label if overlay_prompt else None,
-                action_callback=action_callback if overlay_prompt else None,
+                action_label=action_label,
+                action_callback=action_callback,
             )
         except Exception as exc:
             print(f"  Overlay failed ({exc}). Skipping this step.")
