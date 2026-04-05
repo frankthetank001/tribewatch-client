@@ -72,7 +72,7 @@ TribeWatch parses **30+ event types** from tribe log text with OCR-tolerant rege
 | **Server joins** | Non-tribemate joined the server (from join/leave notifications) |
 | **Parasaur** | Sustained enemy player detection, enemy babies detection, brief flashes |
 
-Every event type has a default severity (critical / warning / info) that you can override per-event in the alert rules.
+Every event type has a color-coded category and configurable alert action in the alert rules.
 
 ---
 
@@ -214,7 +214,6 @@ Every single event type is fully configurable — you control exactly what gets 
 </p>
 
 - **Per-event-type action** — Critical (immediate send + ping), Batch (queue and send periodically), or Ignore (suppress entirely)
-- **Severity override** — force an event type to a different severity level than the default
 - **Discord and ping toggles** — independently control whether an event sends to Discord at all, and separately whether it pings
 - **Custom ping targets** — override the global ping role per event type (e.g. `@here` for vault destruction, `role:lost col` for dino deaths, `name / !owner` for member kills)
 - **Escalation thresholds** — set a count and time window per event type. For example: only fire a Structure Destroyed alert after **4 events in 10 minutes** — so a single auto-decay doesn't wake you up, but an actual raid does. The escalation alert includes a summary of all events in the window
@@ -333,7 +332,7 @@ Your PC                          TribeWatch Server
 |  TribeWatch      |   WebSocket |  Tribe member tracking    |
 |  Client ---------|------------>|  Server activity logs     |
 |  - Screen capture|   events +  |  Generator fuel tracking  |
-|  - OCR (PaddleOCR|   heartbeat |  Todo lists & calendar    |
+|  - OCR (RapidOCR) |   heartbeat |  Todo lists & calendar    |
 |  - Event parsing |             |  Alert rules engine       |
 |  - Discord alerts|             |  Raid timeline clustering |
 |  - Parasaur OCR  |             |  Discord notifications    |
