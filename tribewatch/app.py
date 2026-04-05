@@ -222,6 +222,7 @@ class TribeWatchApp:
         self._active_play_still_count: int = 0  # consecutive still frames before clearing active_play
         self._ACTIVE_PLAY_COOLDOWN: int = 5  # require 5 consecutive still frames (~10s) to exit active play
         self._idle_recovery_attempted: bool = False  # prevents repeated recovery attempts
+        self._overlay = None  # StatusOverlay (set by __main__ if enabled)
         self._auto_reconnect_cb = None  # callback set by __main__.py
         self._on_server_change_cb = None  # callback set by __main__.py
         self._server_id: str = ""
@@ -593,6 +594,44 @@ class TribeWatchApp:
 
         return status
 
+    def _update_overlay(self) -> None:
+        """Update the overlay with current client status."""
+        overlay = getattr(self, "_overlay", None)
+        if not overlay:
+            return
+
+        if self._paused:
+            overlay.update("paused", "Paused")
+            return
+
+        if not self.capture.window_found:
+            overlay.update("offline", "No game window")
+            return
+
+        if self._active_play:
+            overlay.update("playing", "Playing")
+            return
+
+        if self._log_header_visible:
+            overlay.update("monitoring", "Monitoring")
+            return
+
+        # Screen is still but tribe log not visible — idle/recovery countdown
+        still_since = self._screen_still_since
+        if still_since is not None:
+            idle_secs = time.time() - still_since
+            threshold = self.config.alerts.idle_alert_minutes * 60
+            remaining = threshold - idle_secs
+            if remaining > 0:
+                mins = int(remaining // 60)
+                secs = int(remaining % 60)
+                overlay.update("idle", f"Idle \u2022 opening log in {mins}m{secs:02d}s")
+            else:
+                overlay.update("recovery", "Recovering...")
+            return
+
+        overlay.update("idle", "Idle")
+
     _EOS_BASE_INTERVAL = 300       # 5 min normal
     _EOS_MAX_BACKOFF = 3600        # 1 hour max between retries
 
@@ -870,8 +909,8 @@ class TribeWatchApp:
             self._active_play_still_count = 0
         elif self._active_play:
             self._active_play_still_count += 1
-            # On first still frame, peek at OCR to see if tribe log was opened
-            if self._active_play_still_count == 1:
+            # Peek at OCR on every still frame to see if tribe log was opened
+            if self._active_play_still_count <= self._ACTIVE_PLAY_COOLDOWN:
                 try:
                     text = await recognize(
                         img,
@@ -897,6 +936,9 @@ class TribeWatchApp:
         elif not self._active_play and was_active:
             log.info("Screen still for %ds — resuming tribe log & parasaur OCR",
                      self._ACTIVE_PLAY_COOLDOWN * int(self.config.tribe_log.interval))
+        # Update overlay with current status
+        self._update_overlay()
+
         if self._active_play:
             return
 

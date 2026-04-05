@@ -943,6 +943,16 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
         app = TribeWatchApp(cfg, relay=relay)
         app._auto_reconnect_cb = lambda: _handle_reconnect(app, auto=True)
 
+        # Start overlay if enabled
+        try:
+            from tribewatch.overlay import StatusOverlay
+            overlay = StatusOverlay(window_title=cfg.general.window_title)
+            overlay.start()
+            app._overlay = overlay
+            log.info("Status overlay started")
+        except Exception:
+            log.debug("Overlay not available", exc_info=True)
+
         def _on_server_change(old_id, old_name, new_id, new_name):
             app._paused = True  # pause immediately (sync) before async handler
             app._eos_last_query = 0  # force EOS refresh on next heartbeat
