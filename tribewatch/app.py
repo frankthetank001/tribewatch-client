@@ -870,7 +870,22 @@ class TribeWatchApp:
             self._active_play_still_count = 0
         elif self._active_play:
             self._active_play_still_count += 1
-            if self._active_play_still_count >= self._ACTIVE_PLAY_COOLDOWN:
+            # On first still frame, peek at OCR to see if tribe log was opened
+            if self._active_play_still_count == 1:
+                try:
+                    text = await recognize(
+                        img,
+                        engine=self.config.tribe_log.ocr_engine,
+                        upscale=self.config.tribe_log.upscale,
+                        tesseract_path=self.config.tribe_log.tesseract_path,
+                    )
+                    if text and text.lstrip().upper().startswith("LOG"):
+                        log.info("Tribe log detected during active play cooldown — resuming immediately")
+                        self._active_play = False
+                        self._active_play_still_count = 0
+                except Exception:
+                    pass
+            if self._active_play and self._active_play_still_count >= self._ACTIVE_PLAY_COOLDOWN:
                 self._active_play = False
                 self._active_play_still_count = 0
         if self._active_play and not was_active:
