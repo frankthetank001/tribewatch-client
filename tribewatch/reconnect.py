@@ -521,37 +521,14 @@ class ReconnectSequence:
                 )
                 return "retry"
 
-        # --- Stage 3b: Easter/event workaround — extra JOIN button(s) ---
-        # Some events add confirmation dialogs with "JOIN" buttons after
-        # clicking JOIN LAST SESSION.  Keep clicking while visible.
-        await asyncio.sleep(5)
-        for _extra in range(5):
-            hwnd = _find_window_by_title(self._window_title) or hwnd
-            img = _grab_window(hwnd, bbox=None)
-            if not img:
-                break
-            extra_join = self._find_exact_text_coords(img, "JOIN")
-            if not extra_join:
-                break
-            await self._report(
-                "clicking_join",
-                f"Extra JOIN button detected at ({extra_join[0]}, {extra_join[1]}) — clicking it",
-            )
-            await asyncio.sleep(2)
-            focus_window(self._window_title)
-            await asyncio.sleep(0.3)
-            point = (ctypes.c_long * 2)(extra_join[0], extra_join[1])
-            ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point))
-            pyautogui.moveTo(point[0], point[1])
-            await asyncio.sleep(0.5)
-            pyautogui.click(point[0], point[1])
-            await asyncio.sleep(3)
-
-        # --- Stage 4: Wait for game to load ---
+        # --- Stage 3b + 4: Wait for game to load ---
+        # Poll the screen and react to whatever state we see.  This handles
+        # extra JOIN buttons (event/Easter dialogs, server browser), error
+        # dialogs, and the transition from title screen → game world.
         await self._report("waiting_load", "Waiting for game to load...")
         elapsed = 0.0
         last_update = 0.0
-        consecutive_clear = 0  # consecutive checks with no title screen
+        consecutive_clear = 0  # consecutive checks with no title/join UI
 
         while elapsed < _LOAD_TIMEOUT:
             await asyncio.sleep(_POLL_INTERVAL)
@@ -568,14 +545,14 @@ class ReconnectSequence:
                 consecutive_clear = 0
                 continue
 
-            # Check if game is back to a loaded state — the title screen
-            # text should no longer be present once the game world loads.
             img = _grab_window(hwnd, bbox=None)
             if img is None:
                 consecutive_clear = 0
                 continue
 
-            # Check for "Connection Failed" dialog
+            # --- Check for error dialogs first ---
+
+            # "Connection Failed" dialog
             if self._find_connection_failed(img):
                 await self._report(
                     "waiting_load",
@@ -583,9 +560,7 @@ class ReconnectSequence:
                 )
                 return "retry"
 
-            # Check for "Failed to join" dialog — the join was attempted but
-            # the server rejected it.  Click ACCEPT, then switch to the
-            # server browser for subsequent attempts.
+            # "Failed to join" dialog — click ACCEPT, switch to browser
             if self._find_text_coords(img, "ACCEPT") is not None:
                 failed_join = self._find_text_coords(img, "FAILED")
                 if failed_join is not None:
@@ -600,21 +575,34 @@ class ReconnectSequence:
                     )
                     return "retry"
 
-            # Check if we're still on the title screen
-            join_coords = self._find_join_button(img)
-            if join_coords is not None:
+            # --- Check for JOIN LAST SESSION (still on title screen) ---
+            join_last = self._find_join_button(img)
+            if join_last is not None:
                 consecutive_clear = 0
                 continue
 
-            # Check if we ended up on the main menu (JOIN GAME visible but
-            # no failure dialog) — the title screen was dismissed without
-            # JOIN LAST SESSION triggering a connection.
+            # --- Check for any standalone JOIN button ---
+            # Catches event/Easter confirmation dialogs, server browser JOIN,
+            # or any other screen with a JOIN button that needs clicking.
+            extra_join = self._find_exact_text_coords(img, "JOIN")
+            if extra_join is not None:
+                consecutive_clear = 0
+                await self._report(
+                    "clicking_join",
+                    f"JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking",
+                )
+                focus_window(self._window_title)
+                await asyncio.sleep(0.3)
+                send_click(self._window_title, extra_join[0], extra_join[1])
+                await asyncio.sleep(3)
+                continue
+
+            # --- Check for main menu (JOIN GAME without a JOIN button) ---
             if self._find_text_coords(img, "JOIN GAME") is not None:
                 await self._report("failed", "Landed on main menu — retrying")
                 return "retry"
 
-            # Title screen text gone and not on main menu — require 2
-            # consecutive clear checks to avoid false positives from OCR flickers
+            # --- No title screen, no JOIN, no errors — game might be loaded ---
             consecutive_clear += 1
             if consecutive_clear >= 2:
                 opened = await self._open_tribe_log(pyautogui)
@@ -744,30 +732,11 @@ class ReconnectSequence:
         await asyncio.sleep(1)
         await self._report("clicking_join_browser", "Clicked JOIN in server browser")
 
-        # Step 8c: Easter/event workaround — extra JOIN button(s)
-        await asyncio.sleep(5)
-        for _extra in range(5):
-            hwnd = _find_window_by_title(self._window_title)
-            if not hwnd:
-                break
-            img = _grab_window(hwnd, bbox=None)
-            if not img:
-                break
-            extra_join = self._find_exact_text_coords(img, "JOIN")
-            if not extra_join:
-                break
-            await self._report(
-                "clicking_join_browser",
-                f"Extra JOIN button detected at ({extra_join[0]}, {extra_join[1]}) — clicking it",
-            )
-            await asyncio.sleep(2)
-            self._click_at(extra_join[0], extra_join[1], pyautogui)
-            await asyncio.sleep(3)
-
-        # Step 9: Wait for game to load (menu text disappears)
+        # Step 8c + 9: Wait for game to load, clicking any JOIN buttons that appear
         await self._report("waiting_load", "Waiting for game to load...")
         elapsed = 0.0
         last_update = 0.0
+        consecutive_clear = 0
 
         while elapsed < _LOAD_TIMEOUT:
             await asyncio.sleep(_POLL_INTERVAL)
@@ -779,10 +748,12 @@ class ReconnectSequence:
 
             hwnd = _find_window_by_title(self._window_title)
             if not hwnd:
+                consecutive_clear = 0
                 continue
 
             img = _grab_window(hwnd, bbox=None)
             if img is None:
+                consecutive_clear = 0
                 continue
 
             # Check for connection failures
@@ -790,11 +761,33 @@ class ReconnectSequence:
                 await self._report("failed", "Connection failed dialog detected")
                 return "retry"
 
-            # Title screen text should disappear when game loads
-            join_btn = self._find_join_button(img)
-            join_game = self._find_text_coords(img, "JOIN GAME")
-            if join_btn is None and join_game is None:
-                # Game has loaded
+            # Still on title screen?
+            if self._find_join_button(img) is not None:
+                consecutive_clear = 0
+                continue
+
+            # Any standalone JOIN button (event dialogs, confirmations)
+            extra_join = self._find_exact_text_coords(img, "JOIN")
+            if extra_join is not None:
+                consecutive_clear = 0
+                await self._report(
+                    "clicking_join_browser",
+                    f"JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking",
+                )
+                focus_window(self._window_title)
+                await asyncio.sleep(0.3)
+                send_click(self._window_title, extra_join[0], extra_join[1])
+                await asyncio.sleep(3)
+                continue
+
+            # Main menu?
+            if self._find_text_coords(img, "JOIN GAME") is not None:
+                consecutive_clear = 0
+                continue
+
+            # No UI elements — game might be loaded
+            consecutive_clear += 1
+            if consecutive_clear >= 2:
                 opened = await self._open_tribe_log(pyautogui)
                 return "success" if opened else "retry"
 
