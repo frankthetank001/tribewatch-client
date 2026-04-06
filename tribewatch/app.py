@@ -1525,14 +1525,23 @@ class TribeWatchApp:
         self._tribe_window_fail_since = None
         self._tribe_sessions_closed = False
 
-        # Detect tribe name change — OCR'd name differs from configured name
+        # Detect tribe name change — only prompt if server_id also changed
+        # (same server + different OCR name is likely noise, not a real change)
         saved_tribe = self.config.tribe.tribe_name
         if saved_tribe and info.tribe_name:
             if not names_match(saved_tribe, info.tribe_name):
-                cb = getattr(self, "_on_tribe_name_change_cb", None)
-                if cb and not getattr(self, "_tribe_name_change_pending", False):
-                    self._tribe_name_change_pending = True
-                    cb(saved_tribe, info.tribe_name)
+                saved_server = getattr(self.config.server, "last_server_id", "") or getattr(self, "_server_id", "")
+                current_server = getattr(self, "_server_id", "")
+                if saved_server and current_server and saved_server == current_server:
+                    log.debug(
+                        "Tribe name mismatch (%r vs %r) but server_id unchanged (%s) — ignoring",
+                        saved_tribe, info.tribe_name, current_server,
+                    )
+                else:
+                    cb = getattr(self, "_on_tribe_name_change_cb", None)
+                    if cb and not getattr(self, "_tribe_name_change_pending", False):
+                        self._tribe_name_change_pending = True
+                        cb(saved_tribe, info.tribe_name)
 
         # Override with confirmed tribe name to avoid OCR variations in DB/relay
         if self.config.tribe.tribe_name:
