@@ -291,13 +291,10 @@ def cmd_setup(config_path: Path) -> None:
 
         _focus_game_window(config_path)
 
-        # Build existing_bboxes for overlay: all configured regions except current step
+        # Show only the current step's existing bbox on the overlay
         overlay_bboxes: dict[str, list[int]] = {}
-        for other_label, other_bbox in current.items():
-            if other_label == label:
-                overlay_bboxes[f"{other_label} (current)"] = other_bbox
-            else:
-                overlay_bboxes[other_label] = other_bbox
+        if existing_bbox:
+            overlay_bboxes[f"{label} (current)"] = existing_bbox
 
         # Always show the prompt dialog on the overlay so action buttons
         # (e.g. "Open Tribe Log") are available.  When an existing bbox is
