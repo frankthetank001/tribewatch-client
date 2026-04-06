@@ -343,6 +343,13 @@ def cmd_setup(config_path: Path) -> None:
             print(f"  {label + ':':<16} not configured ({status})")
     print()
 
+    # Offer to launch the client
+    try:
+        answer = input("Start monitoring now? [Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = "n"
+    return answer in ("", "y", "yes")
+
 
 def cmd_calibrate(config_path: Path) -> None:
     from tribewatch.calibrate import get_default_bbox

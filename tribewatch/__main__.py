@@ -1075,8 +1075,8 @@ def main() -> None:
 
     # Setup / calibrate commands don't need an existing config
     if args.setup:
-        _cmd_setup(config_path)
-        return
+        if not _cmd_setup(config_path):
+            return
 
     if args.reset_calibration:
         from tribewatch.config import client_config_path
