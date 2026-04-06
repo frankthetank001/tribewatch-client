@@ -106,13 +106,18 @@ def _focus_game_window(config_path: Path) -> None:
     if not window_title:
         return
 
-    from tribewatch.capture import focus_window
+    from tribewatch.capture import focus_window, _find_window_by_title
+
+    hwnd = _find_window_by_title(window_title)
+    if not hwnd:
+        print(f"Game window not found: '{window_title}' — make sure ARK is running")
+        return
 
     if focus_window(window_title):
         print(f"Focused window: '{window_title}'")
-        time.sleep(0.5)
     else:
-        print(f"Window not found: '{window_title}' — make sure the game is running")
+        print(f"Game window found but couldn't bring to foreground — this is normal for fullscreen")
+    time.sleep(0.5)
 
 
 def _save_bbox(
