@@ -565,9 +565,13 @@ def _check_for_updates() -> None:
 
 def _cmd_run(config_path: Path) -> None:
     from tribewatch.config import client_config_path, load_config
+    from tribewatch.singleton import ensure_single_instance
 
     from dotenv import load_dotenv
     load_dotenv()
+
+    # Kill any existing instance before we start
+    ensure_single_instance()
 
     # Client mode: load ONLY the client config file
     cp = client_config_path(config_path)
