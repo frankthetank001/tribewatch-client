@@ -149,7 +149,7 @@ _PATTERNS: list[tuple[re.Pattern[str], EventType, Severity]] = [
     ),
     # Dino starved: Your/Adolescent/Juvenile/Baby <Dino> starved to death!
     (
-        re.compile(r"starved\s+to\s+death", re.I),
+        re.compile(r"starved\s*to\s*death", re.I),
         EventType.DINO_STARVED,
         Severity.WARNING,
     ),
