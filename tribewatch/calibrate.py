@@ -219,7 +219,8 @@ class _OverlayApp:
         win_w = 650
         has_action = action_label and action_callback
         has_keep = self._has_current
-        win_h = 280 + (50 if has_action else 0) + (0 if has_keep else -40)
+        has_example = bool(self._example_url)
+        win_h = 250 + (45 if has_action else 0) + (0 if has_keep else -30) + (35 if has_example else 0)
         x = (sw - win_w) // 2
         y = (sh - win_h) // 2
         self._prompt_win.geometry(f"{win_w}x{win_h}+{x}+{y}")
@@ -232,8 +233,8 @@ class _OverlayApp:
 
         tk.Label(
             inner, text=prompt, fg="white", bg="#1a1a1a",
-            font=("Segoe UI", 16, "bold"), wraplength=580, justify="center",
-        ).pack(pady=(10, 20))
+            font=("Segoe UI", 12), wraplength=580, justify="center",
+        ).pack(pady=(8, 14))
 
         # Action button row (e.g. "Open Tribe Log")
         if action_label and action_callback:
@@ -268,16 +269,16 @@ class _OverlayApp:
             # Existing calibration — offer Re-draw or Keep Current
             tk.Button(
                 btn_frame, text="Re-draw", width=16,
-                font=("Segoe UI", 14, "bold"),
+                font=("Segoe UI", 12, "bold"),
                 bg="#444444", fg="white", activebackground="#666666",
-                relief=tk.RAISED, bd=2, padx=10, pady=6,
+                relief=tk.RAISED, bd=2, padx=8, pady=4,
                 command=self._on_prompt_redraw,
             ).pack(side=tk.LEFT, padx=15)
             tk.Button(
                 btn_frame, text="Keep Current", width=16,
-                font=("Segoe UI", 14, "bold"),
+                font=("Segoe UI", 12, "bold"),
                 bg="#444444", fg="white", activebackground="#666666",
-                relief=tk.RAISED, bd=2, padx=10, pady=6,
+                relief=tk.RAISED, bd=2, padx=8, pady=4,
                 command=self._on_prompt_keep,
             ).pack(side=tk.LEFT, padx=15)
 
@@ -291,9 +292,9 @@ class _OverlayApp:
             # New region — just a Draw button
             tk.Button(
                 btn_frame, text="Draw", width=16,
-                font=("Segoe UI", 14, "bold"),
+                font=("Segoe UI", 12, "bold"),
                 bg="#444444", fg="white", activebackground="#666666",
-                relief=tk.RAISED, bd=2, padx=10, pady=6,
+                relief=tk.RAISED, bd=2, padx=8, pady=4,
                 command=self._on_prompt_redraw,
             ).pack(padx=15)
 
