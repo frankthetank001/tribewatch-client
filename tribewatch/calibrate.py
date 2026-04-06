@@ -233,7 +233,7 @@ class _OverlayApp:
 
         tk.Label(
             inner, text=prompt, fg="white", bg="#1a1a1a",
-            font=("Segoe UI", 12), wraplength=580, justify="center",
+            font=("Segoe UI", 12, "bold"), wraplength=580, justify="center",
         ).pack(pady=(8, 14))
 
         # Action button row (e.g. "Open Tribe Log")
