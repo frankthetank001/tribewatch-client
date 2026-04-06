@@ -179,6 +179,14 @@ _PATTERNS: list[tuple[re.Pattern[str], EventType, Severity]] = [
         EventType.ENEMY_DINO_KILLED,
         Severity.INFO,
     ),
+    # Enemy dino/tame killed (with dino name in parens):
+    # Your Tribe killed FEEDER -Lvl 323(Maeguana) (WINNING)!
+    # Key: Lvl + digits + (DinoName) before the tribe parens
+    (
+        re.compile(r"your\s+tribe\s+killed\s+.+(?:Lv[l1ti!]|Level)\s*\d+\s*\([^)]+\)\s*\(", re.I),
+        EventType.ENEMY_DINO_KILLED,
+        Severity.INFO,
+    ),
     # Enemy dino killed: Your <Dino> killed a <Enemy>
     (
         re.compile(r"your\s+.+killed\s+a\s+", re.I),
