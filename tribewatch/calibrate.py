@@ -217,6 +217,10 @@ class _OverlayApp:
         self._prompt_win.configure(bg="#1a1a1a")
 
         win_w = 650
+        # Set initial position centered — will be refined after widgets are packed
+        x0 = (sw - win_w) // 2
+        y0 = (sh - 400) // 2
+        self._prompt_win.geometry(f"{win_w}x400+{x0}+{y0}")
 
         # Gold border effect via inner frame
         border = tk.Frame(self._prompt_win, bg="#FFD700", padx=3, pady=3)
@@ -315,11 +319,15 @@ class _OverlayApp:
 
         # Let tkinter calculate the required size, then center on screen
         self._prompt_win.update_idletasks()
-        req_w = max(self._prompt_win.winfo_reqwidth(), win_w)
-        req_h = self._prompt_win.winfo_reqheight()
-        x = (sw - req_w) // 2
-        y = (sh - req_h) // 2
-        self._prompt_win.geometry(f"{req_w}x{req_h}+{x}+{y}")
+        actual_w = self._prompt_win.winfo_reqwidth()
+        actual_h = self._prompt_win.winfo_reqheight()
+        if actual_w < win_w:
+            actual_w = win_w
+        scr_w = self._prompt_win.winfo_screenwidth()
+        scr_h = self._prompt_win.winfo_screenheight()
+        x = (scr_w - actual_w) // 2
+        y = (scr_h - actual_h) // 2
+        self._prompt_win.geometry(f"{actual_w}x{actual_h}+{x}+{y}")
 
         # Drop topmost from overlay so the prompt can sit above it at the OS level
         self.root.attributes("-topmost", False)
