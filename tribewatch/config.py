@@ -82,6 +82,9 @@ class WebConfig:
     oauth_client_secret: str = ""
     session_secret: str = ""  # auto-generated; persisted so sessions survive restarts
     admin_discord_id: str = ""  # server admin's Discord user ID — always gets admin access
+    bot_token: str = ""  # Discord bot token (platform-level, shared across all tribes)
+    application_id: str = ""  # Discord application ID (for slash commands)
+    public_key: str = ""  # Discord Ed25519 public key (for interaction verification)
 
 
 @dataclass
