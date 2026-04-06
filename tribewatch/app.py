@@ -559,7 +559,7 @@ class TribeWatchApp:
                     self._server_id = new_id
                     self._server_name = new_name
         except Exception:
-            pass
+            log.debug("Server info lookup failed", exc_info=True)
         status["server_id"] = getattr(self, "_server_id", "")
         status["server_name"] = getattr(self, "_server_name", "")
 

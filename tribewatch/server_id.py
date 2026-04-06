@@ -146,8 +146,17 @@ def get_server_info() -> dict[str, str]:
     Returns ``{"server_id": "9664", "server_name": "OC-PVP-SmallTribes-LostColony9664"}``
     or ``{"server_id": "", "server_name": ""}`` if not found.
     """
-    text = _read_game_user_settings()
-    if text is None:
+    ini_path, launcher = _find_game_user_settings()
+    if ini_path is None:
+        log.warning("Server ID: GameUserSettings.ini not found (checked Steam + Epic paths)")
+        return {"server_id": "", "server_name": ""}
+
+    log.debug("Server ID: found config at %s (launcher=%s)", ini_path, launcher)
+
+    try:
+        text = ini_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        log.warning("Server ID: failed to read %s", ini_path, exc_info=True)
         return {"server_id": "", "server_name": ""}
 
     for line in text.splitlines():
@@ -156,17 +165,21 @@ def get_server_info() -> dict[str, str]:
         _, _, rhs = line.partition("=")
         rhs = rhs.strip().strip('"')
         if not rhs or rhs.strip() == "":
+            log.info("Server ID: LastJoinedSessionPerCategory found but value is empty")
             continue
         # Strip version suffix like " - (v83.25)"
         cleaned = re.sub(r"\s*-\s*\(v[\d.]+\)\s*$", "", rhs)
         m = re.search(r"(\d{3,})$", cleaned)
         if m:
+            log.info("Server ID: detected %s from '%s'", m.group(1), cleaned)
             return {
                 "server_id": m.group(1),
                 "server_name": cleaned,
             }
+        log.warning("Server ID: LastJoinedSessionPerCategory='%s' but no numeric ID found", rhs)
+        return {"server_id": "", "server_name": ""}
 
-    log.debug("LastJoinedSessionPerCategory not found in GameUserSettings.ini")
+    log.warning("Server ID: LastJoinedSessionPerCategory not found in %s", ini_path)
     return {"server_id": "", "server_name": ""}
 
 
