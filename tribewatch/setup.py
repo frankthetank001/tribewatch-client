@@ -228,7 +228,7 @@ def cmd_setup(config_path: Path) -> None:
             "prompt_msg": (
                 "You will now select the parasaur detection notification area.\n\n"
                 "This is the top-of-screen area where alerts like\n"
-                '"Rex - Lvl 20 (Parasaur) detected an enemy!" appear.'
+                '"Players - Lvl 20 (Parasaur) detected an enemy!" appear.'
             ),
             "preview_name": "parasaur_calibration_preview.png",
             "action_label": None,
@@ -421,7 +421,7 @@ def cmd_calibrate_parasaur(config_path: Path) -> None:
     _focus_game_window(config_path)
     print("Select the screen region where parasaur detection notifications appear.")
     print("These are the top-of-screen messages like:")
-    print('  "Rex" - Lvl 20 (Parasaur) detected an enemy!')
+    print('  "Players" - Lvl 20 (Parasaur) detected an enemy!')
     print()
     print("A fullscreen overlay will appear. Drag a rectangle over the notification area.")
     print()

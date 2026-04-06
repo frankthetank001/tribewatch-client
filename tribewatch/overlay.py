@@ -102,13 +102,14 @@ class StatusOverlay:
             root.configure(bg="#1a1a2e")
             root.update_idletasks()
 
-            # Make click-through on Windows
+            # Make click-through on Windows using WS_EX_TRANSPARENT
             try:
-                # Need to call update() before winfo_id() returns valid hwnd
                 root.update()
-                hwnd = root.winfo_id()
+                # Get the real Win32 HWND — tkinter's winfo_id returns the
+                # inner frame, we need the top-level window
+                hwnd = ctypes.windll.user32.GetParent(root.winfo_id()) or root.winfo_id()
                 style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-                style |= WS_EX_TOOLWINDOW  # hide from taskbar
+                style |= WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW
                 ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
             except Exception:
                 log.debug("Failed to set window style", exc_info=True)
