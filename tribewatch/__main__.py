@@ -478,6 +478,23 @@ def _apply_resolution_preset(cfg: object) -> None:
             )
             return
 
+        # Only apply presets if:
+        # - No manual calibration exists (no calibration_resolution set), OR
+        # - The game resolution changed since last calibration
+        cal_res = getattr(cfg.general, "calibration_resolution", None)
+        if cal_res and tuple(cal_res) == resolution:
+            log.debug(
+                "Resolution %dx%d matches calibration — keeping user bboxes",
+                resolution[0], resolution[1],
+            )
+            return
+
+        if cal_res and tuple(cal_res) != resolution:
+            log.info(
+                "Resolution changed from %s to %dx%d — re-applying presets",
+                cal_res, resolution[0], resolution[1],
+            )
+
         # Apply preset bboxes to the live config
         cfg.tribe_log.bbox = list(preset["tribe_log"])
         cfg.parasaur.bbox = list(preset["parasaur"])
