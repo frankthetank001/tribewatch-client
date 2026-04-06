@@ -1050,6 +1050,11 @@ def main() -> None:
         help="Calibrate tribe window capture region",
     )
     parser.add_argument(
+        "--reset-calibration",
+        action="store_true",
+        help="Reset screen regions to resolution defaults (discards manual calibration)",
+    )
+    parser.add_argument(
         "--test-ocr",
         action="store_true",
         help="Capture once, run OCR, print results, exit",
@@ -1071,6 +1076,27 @@ def main() -> None:
     # Setup / calibrate commands don't need an existing config
     if args.setup:
         _cmd_setup(config_path)
+        return
+
+    if args.reset_calibration:
+        from tribewatch.config import client_config_path
+        cp = client_config_path(config_path)
+        if not cp.exists():
+            print(f"No config file found at {cp}")
+            return
+        import tomllib
+        import tomli_w
+        with open(cp, "rb") as f:
+            data = tomllib.load(f)
+        # Clear calibration_resolution so presets re-apply on next run
+        data.get("general", {}).pop("calibration_resolution", None)
+        # Clear manual bboxes
+        for section in ("tribe_log", "parasaur", "tribe"):
+            data.get(section, {}).pop("bbox", None)
+        with open(cp, "wb") as f:
+            tomli_w.dump(data, f)
+        print(f"Calibration reset. Bboxes cleared from {cp}")
+        print("Run TribeWatch again — resolution presets will be auto-applied.")
         return
 
     if args.calibrate:
