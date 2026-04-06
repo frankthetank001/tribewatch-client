@@ -366,6 +366,7 @@ def cmd_calibrate(config_path: Path) -> None:
             instruction="Draw a rectangle over the tribe log.",
             existing_bboxes=overlay_bboxes if overlay_bboxes else None,
             prompt=prompt_text,
+            example_url="https://raw.githubusercontent.com/frankthetank001/tribewatch-client/main/docs/calibration_tribe_log.png",
         )
     except Exception as exc:
         print(f"Overlay failed ({exc}). Falling back to manual input.")
@@ -436,6 +437,7 @@ def cmd_calibrate_parasaur(config_path: Path) -> None:
             instruction="Draw a rectangle over the parasaur notification area.",
             existing_bboxes=overlay_bboxes if overlay_bboxes else None,
             prompt=prompt_text,
+            example_url="https://raw.githubusercontent.com/frankthetank001/tribewatch-client/main/docs/calibration_parasaur.png",
         )
     except Exception as exc:
         print(f"Overlay failed ({exc}). Falling back to manual input.")
@@ -466,13 +468,13 @@ def cmd_calibrate_parasaur(config_path: Path) -> None:
 
 
 def cmd_calibrate_tribe(config_path: Path) -> None:
-    print("=== TribeWatch Tribe Window Calibration ===")
+    print("=== TribeWatch Tribe Members List Calibration ===")
     print()
     _focus_game_window(config_path)
-    print("Select the screen region where the tribe window is displayed.")
+    print("Select the screen region where the tribe members list is displayed.")
     print("This window shows: tribe name, members online count, and member list.")
     print()
-    print("A fullscreen overlay will appear. Drag a rectangle over the tribe window.")
+    print("A fullscreen overlay will appear. Drag a rectangle over the tribe members list.")
     print()
 
     try:
@@ -482,15 +484,16 @@ def cmd_calibrate_tribe(config_path: Path) -> None:
         cfg = load_config(config_path)
         existing_bbox = cfg.tribe.bbox if cfg.tribe.bbox else None
         overlay_bboxes = {}
-        prompt_text = "Select the tribe window area."
+        prompt_text = "Select the tribe members list area."
         if existing_bbox:
-            overlay_bboxes["tribe (current)"] = existing_bbox
+            overlay_bboxes["tribe members (current)"] = existing_bbox
             prompt_text += "\n\nYou already have a region configured."
 
         bbox, _kept = run_overlay(
-            instruction="Draw a rectangle over the tribe window.",
+            instruction="Draw a rectangle over the tribe members list.",
             existing_bboxes=overlay_bboxes if overlay_bboxes else None,
             prompt=prompt_text,
+            example_url="https://raw.githubusercontent.com/frankthetank001/tribewatch-client/main/docs/calibration_tribe_members.png",
         )
     except Exception as exc:
         print(f"Overlay failed ({exc}). Falling back to manual input.")

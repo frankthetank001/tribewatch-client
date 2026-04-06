@@ -127,6 +127,7 @@ class _OverlayApp:
         prompt: str | None = None,
         action_label: str | None = None,
         action_callback: callable | None = None,
+        example_url: str | None = None,
     ) -> None:
         self.result: Optional[list[int]] = None
         self._start_x = 0
@@ -139,6 +140,7 @@ class _OverlayApp:
         self._has_current = any(
             "(current)" in lbl for lbl in (existing_bboxes or {})
         )
+        self._example_url = example_url
 
         self.root = tk.Tk()
         self.root.title("TribeWatch Calibration")
@@ -302,6 +304,21 @@ class _OverlayApp:
                 font=("Segoe UI", 10, "italic"),
             ).pack(pady=(10, 0))
 
+        # "See Example" link
+        if self._example_url:
+            def _open_example(url=self._example_url) -> None:
+                import webbrowser
+                webbrowser.open(url)
+
+            tk.Button(
+                inner, text="See Example", width=16,
+                font=("Segoe UI", 10),
+                bg="#333333", fg="#58a6ff", activebackground="#444444",
+                relief=tk.FLAT, bd=0, padx=6, pady=2,
+                command=_open_example,
+                cursor="hand2",
+            ).pack(pady=(10, 0))
+
         # Drop topmost from overlay so the prompt can sit above it at the OS level
         self.root.attributes("-topmost", False)
         self._prompt_win.lift()
@@ -387,6 +404,7 @@ def run_overlay(
     prompt: str | None = None,
     action_label: str | None = None,
     action_callback: callable | None = None,
+    example_url: str | None = None,
 ) -> tuple[Optional[list[int]], bool]:
     """Launch the calibration overlay and return (bbox, kept).
 
@@ -427,5 +445,7 @@ def run_overlay(
         kwargs["action_label"] = action_label
     if action_callback is not None:
         kwargs["action_callback"] = action_callback
+    if example_url is not None:
+        kwargs["example_url"] = example_url
     app = _OverlayApp(**kwargs)
     return app.run(), app._kept
