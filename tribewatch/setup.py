@@ -348,20 +348,35 @@ def cmd_calibrate(config_path: Path) -> None:
     default = get_default_bbox()
     print(f"Suggested default for your resolution: {default}")
     print("A fullscreen overlay will appear. Drag a rectangle over the tribe log.")
-    print("Press Escape to cancel.")
     print()
 
     try:
         from tribewatch.calibrate import run_overlay
+        from tribewatch.config import load_config
 
-        bbox, _kept = run_overlay()
+        cfg = load_config(config_path)
+        existing_bbox = cfg.tribe_log.bbox if cfg.tribe_log.bbox else None
+        overlay_bboxes = {}
+        prompt_text = "Select the tribe log area."
+        if existing_bbox:
+            overlay_bboxes["tribe log (current)"] = existing_bbox
+            prompt_text += "\n\nYou already have a region configured."
+
+        bbox, _kept = run_overlay(
+            instruction="Draw a rectangle over the tribe log.",
+            existing_bboxes=overlay_bboxes if overlay_bboxes else None,
+            prompt=prompt_text,
+        )
     except Exception as exc:
         print(f"Overlay failed ({exc}). Falling back to manual input.")
         cmd_calibrate_manual(config_path)
         return
 
     if bbox is None:
-        print("Calibration cancelled.")
+        if _kept:
+            print("Keeping current calibration.")
+        else:
+            print("Calibration cancelled.")
         return
 
     _save_bbox(config_path, bbox)
@@ -403,13 +418,25 @@ def cmd_calibrate_parasaur(config_path: Path) -> None:
     print('  "Rex" - Lvl 20 (Parasaur) detected an enemy!')
     print()
     print("A fullscreen overlay will appear. Drag a rectangle over the notification area.")
-    print("Press Escape to cancel.")
     print()
 
     try:
         from tribewatch.calibrate import run_overlay
+        from tribewatch.config import load_config
 
-        bbox, _kept = run_overlay()
+        cfg = load_config(config_path)
+        existing_bbox = cfg.parasaur.bbox if cfg.parasaur.bbox else None
+        overlay_bboxes = {}
+        prompt_text = "Select the parasaur detection notification area."
+        if existing_bbox:
+            overlay_bboxes["parasaur (current)"] = existing_bbox
+            prompt_text += "\n\nYou already have a region configured."
+
+        bbox, _kept = run_overlay(
+            instruction="Draw a rectangle over the parasaur notification area.",
+            existing_bboxes=overlay_bboxes if overlay_bboxes else None,
+            prompt=prompt_text,
+        )
     except Exception as exc:
         print(f"Overlay failed ({exc}). Falling back to manual input.")
         print()
@@ -429,7 +456,10 @@ def cmd_calibrate_parasaur(config_path: Path) -> None:
         return
 
     if bbox is None:
-        print("Calibration cancelled.")
+        if _kept:
+            print("Keeping current calibration.")
+        else:
+            print("Calibration cancelled.")
         return
 
     _save_bbox(config_path, bbox, section="parasaur", preview_name="parasaur_calibration_preview.png")
@@ -443,13 +473,25 @@ def cmd_calibrate_tribe(config_path: Path) -> None:
     print("This window shows: tribe name, members online count, and member list.")
     print()
     print("A fullscreen overlay will appear. Drag a rectangle over the tribe window.")
-    print("Press Escape to cancel.")
     print()
 
     try:
         from tribewatch.calibrate import run_overlay
+        from tribewatch.config import load_config
 
-        bbox, _kept = run_overlay()
+        cfg = load_config(config_path)
+        existing_bbox = cfg.tribe.bbox if cfg.tribe.bbox else None
+        overlay_bboxes = {}
+        prompt_text = "Select the tribe window area."
+        if existing_bbox:
+            overlay_bboxes["tribe (current)"] = existing_bbox
+            prompt_text += "\n\nYou already have a region configured."
+
+        bbox, _kept = run_overlay(
+            instruction="Draw a rectangle over the tribe window.",
+            existing_bboxes=overlay_bboxes if overlay_bboxes else None,
+            prompt=prompt_text,
+        )
     except Exception as exc:
         print(f"Overlay failed ({exc}). Falling back to manual input.")
         print()
@@ -469,7 +511,10 @@ def cmd_calibrate_tribe(config_path: Path) -> None:
         return
 
     if bbox is None:
-        print("Calibration cancelled.")
+        if _kept:
+            print("Keeping current calibration.")
+        else:
+            print("Calibration cancelled.")
         return
 
     _save_bbox(config_path, bbox, section="tribe", preview_name="tribe_calibration_preview.png")
