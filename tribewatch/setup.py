@@ -219,6 +219,7 @@ def cmd_setup(config_path: Path) -> None:
             "preview_name": "tribewatch_calibration_preview.png",
             "action_label": "Open Tribe Log",
             "action_callback": _send_game_key("l"),
+            "example_url": "https://raw.githubusercontent.com/frankthetank001/tribewatch-client/main/docs/calibration_tribe_log.png",
         },
         {
             "section": "parasaur",
@@ -232,15 +233,17 @@ def cmd_setup(config_path: Path) -> None:
             "preview_name": "parasaur_calibration_preview.png",
             "action_label": None,
             "action_callback": None,
+            "example_url": "https://raw.githubusercontent.com/frankthetank001/tribewatch-client/main/docs/calibration_parasaur.png",
         },
         {
             "section": "tribe",
-            "label": "Tribe Window",
+            "label": "Tribe Members List",
             "description": "The tribe member list showing online/offline status.",
             "prompt_msg": "Make sure to INCLUDE your tribe name at the top of the capture region.",
             "preview_name": "tribe_calibration_preview.png",
             "action_label": None,
             "action_callback": None,
+            "example_url": "https://raw.githubusercontent.com/frankthetank001/tribewatch-client/main/docs/calibration_tribe_members.png",
         },
     ]
 
@@ -267,6 +270,7 @@ def cmd_setup(config_path: Path) -> None:
         preview_name = step["preview_name"]
         action_label = step["action_label"]
         action_callback = step["action_callback"]
+        example_url = step.get("example_url")
 
         print(f"--- Step {i}/{total}: {label} ---")
         print(f"  {description}")
@@ -304,6 +308,7 @@ def cmd_setup(config_path: Path) -> None:
                 prompt=overlay_prompt,
                 action_label=action_label,
                 action_callback=action_callback,
+                example_url=example_url,
             )
         except Exception as exc:
             print(f"  Overlay failed ({exc}). Skipping this step.")
