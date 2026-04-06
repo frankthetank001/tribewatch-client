@@ -217,13 +217,6 @@ class _OverlayApp:
         self._prompt_win.configure(bg="#1a1a1a")
 
         win_w = 650
-        has_action = action_label and action_callback
-        has_keep = self._has_current
-        has_example = bool(self._example_url)
-        win_h = 250 + (45 if has_action else 0) + (0 if has_keep else -30) + (35 if has_example else 0)
-        x = (sw - win_w) // 2
-        y = (sh - win_h) // 2
-        self._prompt_win.geometry(f"{win_w}x{win_h}+{x}+{y}")
 
         # Gold border effect via inner frame
         border = tk.Frame(self._prompt_win, bg="#FFD700", padx=3, pady=3)
@@ -319,6 +312,14 @@ class _OverlayApp:
                 command=_open_example,
                 cursor="hand2",
             ).pack(pady=(10, 0))
+
+        # Let tkinter calculate the required size, then center on screen
+        self._prompt_win.update_idletasks()
+        req_w = max(self._prompt_win.winfo_reqwidth(), win_w)
+        req_h = self._prompt_win.winfo_reqheight()
+        x = (sw - req_w) // 2
+        y = (sh - req_h) // 2
+        self._prompt_win.geometry(f"{req_w}x{req_h}+{x}+{y}")
 
         # Drop topmost from overlay so the prompt can sit above it at the OS level
         self.root.attributes("-topmost", False)
