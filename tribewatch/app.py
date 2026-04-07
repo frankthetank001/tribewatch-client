@@ -872,7 +872,7 @@ class TribeWatchApp:
         Waits a random 20–25 minutes between refreshes.
         """
         import random
-        from tribewatch.capture import is_window_foreground, send_key
+        from tribewatch.capture import focus_window, is_window_foreground, send_key
 
         # How long to wait for the capture cycle to update _log_header_visible
         check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
@@ -895,14 +895,21 @@ class TribeWatchApp:
             if not window_title:
                 continue
 
-            # Skip if ARK isn't the foreground window — we'd otherwise send
-            # Esc/L to whatever app the user is focused on. PostMessage
-            # delivers to the HWND regardless, but ARK ignores input from
-            # background windows under BattleEye, and the user's other apps
-            # would receive the keys instead.
+            # If ARK isn't focused, try to grab focus first. The user is
+            # heuristically AFK at this point (not active_play, log still
+            # visible) so stealing focus is reasonable. If we can't acquire
+            # focus (e.g. fullscreen exclusive elsewhere) skip the cycle —
+            # PostMessage might deliver to ARK anyway, but we have no
+            # signal that the keys are being processed and would risk a
+            # false-positive auto-reconnect.
             if not is_window_foreground(window_title):
-                log.debug("Tribe log refresh: skipped — ARK not focused")
-                continue
+                if focus_window(window_title):
+                    log.info("Tribe log refresh: focused ARK before sending keys")
+                    # Brief pause for the focus change to settle
+                    await asyncio.sleep(0.5)
+                else:
+                    log.debug("Tribe log refresh: could not focus ARK, skipping cycle")
+                    continue
 
             try:
                 log.info("Tribe log refresh: pressing Esc to close tribe log")
@@ -991,12 +998,18 @@ class TribeWatchApp:
             self._idle_recovery_attempted = True
 
             window_title = self.config.general.window_title
-            from tribewatch.capture import is_window_foreground, send_key
+            from tribewatch.capture import focus_window, is_window_foreground, send_key
 
-            # Skip if ARK isn't focused — see refresh loop comment.
+            # Try to grab focus before sending keys. The user is AFK by
+            # definition here (10 min of static screen) so focus-stealing
+            # is fine. Skip the recovery cycle if we can't acquire focus.
             if not is_window_foreground(window_title):
-                log.debug("Idle recovery: skipped — ARK not focused")
-                continue
+                if focus_window(window_title):
+                    log.info("Idle recovery: focused ARK before sending keys")
+                    await asyncio.sleep(0.5)
+                else:
+                    log.debug("Idle recovery: could not focus ARK, skipping")
+                    continue
 
             log.warning(
                 "Screen idle for %ds with tribe log closed — pressing L to reopen",

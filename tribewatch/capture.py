@@ -121,9 +121,9 @@ WM_KEYUP = 0x0101
 def is_window_foreground(title: str) -> bool:
     """Return True if the window with *title* is currently the foreground.
 
-    Used by the tribe-log refresh / idle recovery loops to skip sending
-    Esc/L when the user has alt-tabbed away from ARK — otherwise the
-    keystrokes go to whatever app the user is actually focused on.
+    Used by the tribe-log refresh / idle recovery loops to check whether
+    ARK currently owns input focus before sending Esc/L. If not, the
+    refresh loop will try to acquire focus via focus_window() first.
     """
     if not _IS_WIN32:
         return False
@@ -132,6 +132,22 @@ def is_window_foreground(title: str) -> bool:
         return False
     user32 = ctypes.windll.user32  # type: ignore[attr-defined]
     return user32.GetForegroundWindow() == hwnd
+
+
+def focus_window(title: str) -> bool:
+    """Bring the window with *title* to the foreground and return True on success.
+
+    Restores from minimized if needed and uses the keybd_event Alt-key
+    trick to bypass Windows' foreground-lock when called from a
+    background process. Verifies the focus actually transferred before
+    returning.
+    """
+    if not _IS_WIN32:
+        return False
+    hwnd = _find_window_by_title(title)
+    if not hwnd:
+        return False
+    return _focus_window(hwnd)
 
 
 def send_key(title: str, key: str) -> bool:
