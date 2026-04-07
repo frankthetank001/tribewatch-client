@@ -171,6 +171,17 @@ class PresenceConfig:
 
 
 @dataclass
+class ReconnectConfig:
+    """Auto-reconnect behaviour for the relay client.
+
+    The reconnect feature relaunches ARK + rejoins the server when the
+    client detects a disconnect / crash. Disable this if you don't want
+    automatic re-joins.
+    """
+    enabled: bool = True
+
+
+@dataclass
 class TribeWatchConfig:
     tribe_log: TribeLogConfig = field(default_factory=TribeLogConfig)
     discord: DiscordConfig = field(default_factory=DiscordConfig)
@@ -182,6 +193,7 @@ class TribeWatchConfig:
     generator: GeneratorConfig = field(default_factory=GeneratorConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     presence: PresenceConfig = field(default_factory=PresenceConfig)
+    reconnect: ReconnectConfig = field(default_factory=ReconnectConfig)
     todo_summary: TodoSummaryConfig = field(default_factory=TodoSummaryConfig)
     discord_notifications: DiscordNotificationsConfig = field(default_factory=DiscordNotificationsConfig)
 
@@ -407,7 +419,7 @@ def _config_to_dict(cfg: TribeWatchConfig) -> dict[str, Any]:
 
 
 # Which top-level sections and general fields belong to each mode.
-_CLIENT_SECTIONS = {"server", "tribe_log", "general", "parasaur", "tribe"}
+_CLIENT_SECTIONS = {"server", "tribe_log", "general", "parasaur", "tribe", "reconnect"}
 _CLIENT_GENERAL_FIELDS = {"log_level", "state_file", "monitor", "window_title", "calibration_resolution"}
 _CLIENT_PARASAUR_FIELDS = {"bbox", "interval", "clear_delay", "grace_period", "ocr_engine", "parasaurs"}
 _CLIENT_SERVER_FIELDS = {"server_url", "client_token"}  # mode is a CLI flag, auth_token is server-side

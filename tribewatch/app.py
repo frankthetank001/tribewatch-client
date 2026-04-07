@@ -240,6 +240,64 @@ class TribeWatchApp:
         if cal_res and len(cal_res) == 2 and all(isinstance(v, int) and v > 0 for v in cal_res):
             self._last_game_resolution = (cal_res[0], cal_res[1])
 
+    def _maybe_auto_reconnect(self) -> None:
+        """Trigger the auto-reconnect callback iff the feature is enabled.
+
+        Gated by config.reconnect.enabled — set to False to opt out of
+        the automatic ARK relaunch / server rejoin behaviour. Manual
+        reconnects via the dashboard still work either way.
+
+        Always saves a debug screenshot of the current screen state to
+        ``debug/auto_reconnect_<timestamp>.png`` before firing the
+        callback (or skipping it). Useful for diagnosing why the
+        recovery logic decided the tribe log was missing — sometimes
+        the OCR misreads, sometimes the game window is genuinely
+        elsewhere, and the screenshot is the only way to tell.
+        """
+        self._save_auto_reconnect_debug_screenshot()
+        if not getattr(self.config.reconnect, "enabled", True):
+            log.info("Auto-reconnect skipped: disabled in config")
+            return
+        if self._auto_reconnect_cb:
+            self._auto_reconnect_cb()
+
+    def _save_auto_reconnect_debug_screenshot(self) -> None:
+        """Capture the current ARK window and save it under ``debug/``.
+
+        Best-effort — failures are logged at debug level and don't
+        block the auto-reconnect.
+        """
+        try:
+            from datetime import datetime
+            from pathlib import Path
+
+            img = self.capture.grab()
+            if img is None:
+                log.debug("Auto-reconnect debug screenshot: capture.grab() returned None")
+                return
+
+            debug_dir = Path("debug")
+            debug_dir.mkdir(exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out = debug_dir / f"auto_reconnect_{ts}.png"
+            img.save(out)
+            log.warning("Auto-reconnect debug screenshot saved: %s", out)
+
+            # Prune old screenshots — keep at most the 20 most recent so the
+            # directory doesn't grow forever.
+            try:
+                old = sorted(
+                    debug_dir.glob("auto_reconnect_*.png"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                for stale_path in old[20:]:
+                    stale_path.unlink(missing_ok=True)
+            except Exception:
+                log.debug("Failed to prune old auto_reconnect screenshots", exc_info=True)
+        except Exception:
+            log.debug("Failed to save auto-reconnect debug screenshot", exc_info=True)
+
     # -- Dynamic bbox preset switching -------------------------------------
 
     def _check_resolution_scaling(self) -> None:
@@ -572,6 +630,10 @@ class TribeWatchApp:
         game_res = getattr(self, "_last_game_resolution", None)
         status["resolution"] = f"{game_res[0]}x{game_res[1]}" if game_res else ""
 
+        # Surface tunable settings so the dashboard tile can show their
+        # current state without an extra API call.
+        status["auto_reconnect"] = bool(getattr(self.config.reconnect, "enabled", True))
+
         # Dynamic bbox scaling — check if game resolution changed
         try:
             self._check_resolution_scaling()
@@ -782,8 +844,7 @@ class TribeWatchApp:
                     log.warning(
                         "Tribe log refresh: tribe log still visible after Esc — triggering auto-reconnect"
                     )
-                    if self._auto_reconnect_cb:
-                        self._auto_reconnect_cb()
+                    self._maybe_auto_reconnect()
                     continue
 
                 log.info("Tribe log refresh: pressing L to reopen tribe log")
@@ -795,8 +856,7 @@ class TribeWatchApp:
                     log.warning(
                         "Tribe log refresh: tribe log NOT visible after pressing L — triggering auto-reconnect"
                     )
-                    if self._auto_reconnect_cb:
-                        self._auto_reconnect_cb()
+                    self._maybe_auto_reconnect()
                 else:
                     log.info("Tribe log refresh: tribe log reopened successfully")
             except Exception:
@@ -870,8 +930,7 @@ class TribeWatchApp:
 
             # Recovery failed — trigger auto-reconnect
             log.warning("Recovery failed — triggering auto-reconnect")
-            if self._auto_reconnect_cb:
-                self._auto_reconnect_cb()
+            self._maybe_auto_reconnect()
 
     async def _capture_cycle(self) -> None:
         """Single capture → OCR → parse → dedup → dispatch cycle."""

@@ -143,7 +143,19 @@ async def check_for_update() -> dict | None:
 
 
 async def download_and_run_installer(download_url: str) -> bool:
-    """Download the installer to a temp file and launch it."""
+    """Download the installer and hand off via a wait-shim, then exit.
+
+    Spawns a small batch shim that:
+      1. Polls until our PID disappears (we exit immediately after spawn)
+      2. Runs the installer with /SILENT /RESTARTAPPLICATIONS
+      3. Deletes itself
+
+    Without the shim, Inno Setup pops up a "Setup was unable to close
+    all applications" dialog because the running TribeWatch process
+    holds open the very files the installer wants to overwrite. The
+    /CLOSEAPPLICATIONS flag uses the Windows Restart Manager, which
+    only works for apps registered with RM — TribeWatch isn't.
+    """
     try:
         tmp_dir = tempfile.mkdtemp(prefix="tribewatch_update_")
         asset_name = ASSET_NAME_DEV if _is_dev_version() else ASSET_NAME_STABLE
@@ -160,12 +172,48 @@ async def download_and_run_installer(download_url: str) -> bool:
                     async for chunk in resp.content.iter_chunked(8192):
                         f.write(chunk)
 
-        log.info("Launching installer: %s", installer_path)
-        subprocess.Popen(
-            [installer_path, "/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"],
-            creationflags=subprocess.DETACHED_PROCESS,
+        # Build the wait-then-run-installer shim
+        pid = os.getpid()
+        shim_path = os.path.join(tmp_dir, "run_update.bat")
+        # Inno Setup forensic log lives next to the installer in the temp
+        # dir. If the install ever fails (e.g. file lock issues), this is
+        # the file to inspect — it lists every file Setup tried to write,
+        # every Restart Manager call, and the reason for any failure.
+        log_path = os.path.join(tmp_dir, "install.log")
+        # Note: %~f0 = full path to this batch file (for self-delete)
+        # We intentionally do NOT delete the temp dir — the install log
+        # stays around for diagnosis if anything goes wrong.
+        shim_body = (
+            "@echo off\r\n"
+            ":wait\r\n"
+            f'tasklist /fi "PID eq {pid}" 2>nul | find "{pid}" >nul\r\n'
+            "if not errorlevel 1 (\r\n"
+            "    timeout /t 1 /nobreak >nul\r\n"
+            "    goto wait\r\n"
+            ")\r\n"
+            f'start "" "{installer_path}" /SILENT /RESTARTAPPLICATIONS /LOG="{log_path}"\r\n'
+            'del "%~f0"\r\n'
         )
-        return True
+        with open(shim_path, "w") as f:
+            f.write(shim_body)
+
+        log.info("Launching update shim (PID %d → installer %s)", pid, installer_path)
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        CREATE_NO_WINDOW = 0x08000000
+        subprocess.Popen(
+            ["cmd", "/c", shim_path],
+            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+            close_fds=True,
+        )
+
+        # Give the shim a tick to start polling, then exit so it can
+        # observe our PID disappear and proceed to run the installer.
+        log.warning("Update queued — exiting current process so installer can replace files")
+        # Use os._exit so we don't run any cleanup that might re-grab files
+        import time
+        time.sleep(0.3)
+        os._exit(0)
     except Exception:
         log.warning("Failed to download/run installer", exc_info=True)
         return False
