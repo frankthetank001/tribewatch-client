@@ -655,6 +655,95 @@ async def _handle_reconnect_cancel(app: Any) -> None:
     await seq.cancel()
 
 
+async def _handle_restart(app: Any) -> None:
+    """Restart the client process.
+
+    Triggered by a remote `restart` control command from the dashboard.
+    Cleans up the relay/overlay, releases the singleton PID lockfile,
+    spawns a detached child running the same command line, then exits
+    the current process so the child takes over.
+
+    Why subprocess.Popen instead of os.execv:
+      ``os.execv`` works for `python -m tribewatch` invocations but is
+      flaky on Windows when running from a PyInstaller frozen .exe —
+      the bootloader's console/handle ownership confuses the in-place
+      replacement and the new process effectively dies before it
+      starts. ``Popen`` with ``DETACHED_PROCESS`` reliably hands off to
+      the child on both Python and frozen-exe runs.
+
+    Three launch shapes are supported:
+      1. PyInstaller frozen exe (sys.frozen) — re-launch the .exe.
+      2. Python 3.10+ with sys.orig_argv — preserves `python -m tribewatch`.
+      3. Fallback — `python -m tribewatch <argv...>`.
+    """
+    import os
+    import subprocess
+    import sys
+    log = logging.getLogger(__name__)
+    log.warning("Restart requested via remote control — relaunching process")
+
+    # Build the right launch command for how this process was started.
+    if getattr(sys, "frozen", False):
+        # PyInstaller bundle — re-launch the .exe with the same argv
+        argv = [sys.executable, *sys.argv[1:]]
+    elif hasattr(sys, "orig_argv") and sys.orig_argv:
+        # Python 3.10+: orig_argv preserves how the interpreter was
+        # invoked, including `-m tribewatch` if that was used.
+        argv = list(sys.orig_argv)
+    else:
+        # Fallback: assume `python -m tribewatch` style.
+        argv = [sys.executable, "-m", "tribewatch", *sys.argv[1:]]
+
+    # Try to shut down anything that holds an OS handle so the new
+    # process can grab them cleanly.
+    try:
+        overlay = getattr(app, "_overlay", None)
+        if overlay is not None and hasattr(overlay, "stop"):
+            overlay.stop()
+    except Exception:
+        log.debug("Overlay stop during restart failed", exc_info=True)
+    try:
+        if app._relay is not None:
+            await app._relay.disconnect()
+    except Exception:
+        log.debug("Relay disconnect during restart failed", exc_info=True)
+
+    # Release the singleton lockfile so the child's ensure_single_instance
+    # doesn't try to kill us (the child has a different PID now).
+    try:
+        from tribewatch.singleton import _LOCK_FILE
+        _LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        log.debug("Singleton lockfile release during restart failed", exc_info=True)
+
+    # Give the event loop a tick to flush
+    await asyncio.sleep(0.3)
+
+    log.info("Spawning replacement process: %s", " ".join(repr(a) for a in argv))
+    try:
+        if sys.platform == "win32":
+            # DETACHED_PROCESS (0x00000008) — child is fully independent
+            # of the parent's console + lifetime. CREATE_NEW_PROCESS_GROUP
+            # (0x00000200) so Ctrl+C in the parent shell doesn't propagate.
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            subprocess.Popen(
+                argv,
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                close_fds=True,
+            )
+        else:
+            subprocess.Popen(argv, start_new_session=True, close_fds=True)
+    except Exception:
+        log.exception("Restart spawn failed — staying alive")
+        return
+
+    # Give the child a brief head start, then exit the current process.
+    await asyncio.sleep(0.5)
+    log.info("Restart child spawned — exiting current process")
+    os._exit(0)
+
+
 async def _handle_server_change(
     app: Any, cfg: Any, config_path: Path, old_name: str, new_id: str, new_name: str,
 ) -> None:
@@ -892,6 +981,8 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             _handle_reconnect(app, use_browser=True)
         elif command == "reconnect_cancel":
             asyncio.create_task(_handle_reconnect_cancel(app))
+        elif command == "restart":
+            asyncio.create_task(_handle_restart(app))
 
     def _on_config_update(section: str, data: dict, msg_id: str) -> None:
         # Only save client-owned sections
@@ -905,6 +996,7 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             from tribewatch.config import (
                 GeneralConfig,
                 ParasaurConfig,
+                ReconnectConfig,
                 ServerConfig,
                 TribeConfig,
                 TribeLogConfig,
@@ -915,6 +1007,7 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
                 "parasaur": (ParasaurConfig, "parasaur"),
                 "tribe": (TribeConfig, "tribe"),
                 "server": (ServerConfig, "server"),
+                "reconnect": (ReconnectConfig, "reconnect"),
             }
             entry = _section_cls.get(section)
             if entry:
