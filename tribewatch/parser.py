@@ -665,8 +665,10 @@ def _parse_tribe_window_multiline(lines: list[str]) -> TribeInfo | None:
     if members_idx is None:
         return None
 
-    # Tribe name: everything before the MEMBERS ONLINE line
-    tribe_name = " ".join(lines[:members_idx]).strip()
+    # Tribe name: first line only. Subsequent lines before the MEMBERS ONLINE
+    # header can be UI noise like a "1d.17h" session-time stamp, which would
+    # otherwise get concatenated into the tribe name.
+    tribe_name = lines[0].strip() if members_idx > 0 else ""
     # Strip "TRIBE GROUP" UI label from tribe name
     tribe_name = _TRIBE_GROUP_RE.sub("", tribe_name).strip()
     if not tribe_name:
