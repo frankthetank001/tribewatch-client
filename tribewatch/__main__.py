@@ -554,7 +554,7 @@ def _check_for_updates() -> None:
     print()
 
 
-def _cmd_run(config_path: Path) -> None:
+def _cmd_run(config_path: Path, *, skip_unverified_setup: bool = False) -> None:
     from tribewatch.config import client_config_path, load_config
     from tribewatch.singleton import ensure_single_instance
 
@@ -577,7 +577,7 @@ def _cmd_run(config_path: Path) -> None:
         _check_for_updates()
 
     verified = _apply_resolution_preset(cfg)
-    if not verified:
+    if not verified and not skip_unverified_setup:
         try:
             from tribewatch.server_id import get_game_resolution
             res = get_game_resolution()
@@ -1257,7 +1257,9 @@ def main() -> None:
     elif args.test_discord:
         _cmd_test_discord(config_path)
     else:
-        _cmd_run(config_path)
+        # If we just ran the setup wizard explicitly, don't let _cmd_run
+        # re-trigger it again via the unverified-resolution gate.
+        _cmd_run(config_path, skip_unverified_setup=bool(args.setup))
 
 
 if __name__ == "__main__":
