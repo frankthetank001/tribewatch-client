@@ -192,6 +192,34 @@ def cmd_setup(config_path: Path) -> None:
     else:
         data = {}
 
+    # If the game resolution differs from the saved calibration resolution,
+    # swap in the preset for the current resolution so the overlay shows
+    # the right "existing" bboxes to keep/redraw.
+    try:
+        from tribewatch.server_id import get_game_resolution
+        from tribewatch.calibrate import get_preset
+
+        current_res = get_game_resolution()
+        cal_res = data.get("general", {}).get("calibration_resolution")
+        if current_res and cal_res and tuple(cal_res) != current_res:
+            print(
+                f"Resolution changed: calibrated at {cal_res[0]}x{cal_res[1]}, "
+                f"game is now at {current_res[0]}x{current_res[1]}"
+            )
+            preset = get_preset(current_res)
+            if preset:
+                print("Using preset for current resolution as starting bboxes.")
+                for section, key in (("tribe_log", "tribe_log"), ("parasaur", "parasaur"), ("tribe", "tribe")):
+                    data.setdefault(section, {})["bbox"] = list(preset[key])
+                data.setdefault("general", {})["calibration_resolution"] = list(current_res)
+            else:
+                print("No preset available for current resolution — existing bboxes cleared.")
+                for section in ("tribe_log", "parasaur", "tribe"):
+                    data.get(section, {}).pop("bbox", None)
+            print()
+    except Exception:
+        pass
+
     # Focus the game window before calibration so it's visible behind the overlay
     _focus_game_window(config_path)
 
