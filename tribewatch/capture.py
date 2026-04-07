@@ -118,6 +118,22 @@ WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
 
 
+def is_window_foreground(title: str) -> bool:
+    """Return True if the window with *title* is currently the foreground.
+
+    Used by the tribe-log refresh / idle recovery loops to skip sending
+    Esc/L when the user has alt-tabbed away from ARK — otherwise the
+    keystrokes go to whatever app the user is actually focused on.
+    """
+    if not _IS_WIN32:
+        return False
+    hwnd = _find_window_by_title(title)
+    if not hwnd:
+        return False
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    return user32.GetForegroundWindow() == hwnd
+
+
 def send_key(title: str, key: str) -> bool:
     """Send a key press to a window via PostMessage (no focus steal).
 

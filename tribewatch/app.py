@@ -261,6 +261,68 @@ class TribeWatchApp:
         if self._auto_reconnect_cb:
             self._auto_reconnect_cb()
 
+    async def _is_esc_menu_open(self) -> bool:
+        """Return True if ARK's in-game pause menu is currently visible.
+
+        Captures a centred region of the ARK window and runs OCR looking
+        for the unmistakable button labels — RESUME, SETTINGS, EXIT TO
+        MAIN MENU. Used by the tribe-log refresh and idle recovery loops
+        to detect the case where Esc opened the pause menu instead of
+        just closing the tribe log: pressing L while the menu is up
+        does nothing useful, and the recovery would otherwise escalate
+        to a false-positive auto-reconnect.
+
+        Returns False on any failure (no window, no OCR engine, no
+        match) — the caller can safely treat False as "menu not detected".
+        """
+        try:
+            import ctypes
+            from tribewatch.capture import _IS_WIN32, _grab_window
+            from tribewatch.ocr_engine import recognize
+
+            if not _IS_WIN32:
+                return False
+            hwnd = getattr(self.capture, "_hwnd", None)
+            if not hwnd:
+                return False
+
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            rect = (ctypes.c_long * 4)()
+            user32.GetClientRect(hwnd, ctypes.byref(rect))
+            width = rect[2]
+            height = rect[3]
+            if width <= 0 or height <= 0:
+                return False
+
+            # Centred bbox covering ~40% width × ~60% height — wide enough
+            # to catch the button stack at any common resolution, narrow
+            # enough to skip the surrounding game world clutter.
+            bw = int(width * 0.40)
+            bh = int(height * 0.60)
+            x0 = (width - bw) // 2
+            y0 = (height - bh) // 2
+            bbox = [x0, y0, x0 + bw, y0 + bh]
+
+            img = _grab_window(hwnd, bbox)
+            if img is None:
+                return False
+
+            engine = getattr(self.config.tribe_log, "ocr_engine", "winrt") or "winrt"
+            text = await recognize(img, engine=engine, retries=0, preprocess=False)
+            if not text:
+                return False
+            upper = text.upper()
+            # Any one of these keywords is enough — RESUME is the most
+            # reliable, but check a few in case OCR mangles one.
+            for needle in ("RESUME", "EXIT TO MAIN", "SETTINGS"):
+                if needle in upper:
+                    log.debug("Esc menu detected via OCR keyword %r", needle)
+                    return True
+            return False
+        except Exception:
+            log.debug("Esc menu OCR check failed", exc_info=True)
+            return False
+
     def _save_auto_reconnect_debug_screenshot(self) -> None:
         """Capture the current ARK window and save it under ``debug/``.
 
@@ -810,7 +872,7 @@ class TribeWatchApp:
         Waits a random 20–25 minutes between refreshes.
         """
         import random
-        from tribewatch.capture import send_key
+        from tribewatch.capture import is_window_foreground, send_key
 
         # How long to wait for the capture cycle to update _log_header_visible
         check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
@@ -833,6 +895,15 @@ class TribeWatchApp:
             if not window_title:
                 continue
 
+            # Skip if ARK isn't the foreground window — we'd otherwise send
+            # Esc/L to whatever app the user is focused on. PostMessage
+            # delivers to the HWND regardless, but ARK ignores input from
+            # background windows under BattleEye, and the user's other apps
+            # would receive the keys instead.
+            if not is_window_foreground(window_title):
+                log.debug("Tribe log refresh: skipped — ARK not focused")
+                continue
+
             try:
                 log.info("Tribe log refresh: pressing Esc to close tribe log")
                 send_key(window_title, "escape")
@@ -846,6 +917,14 @@ class TribeWatchApp:
                     )
                     self._maybe_auto_reconnect()
                     continue
+
+                # If Esc opened the in-game pause menu instead of just
+                # closing the tribe log, dismiss it before pressing L —
+                # otherwise L lands in the menu and does nothing useful.
+                if await self._is_esc_menu_open():
+                    log.info("Tribe log refresh: pause menu detected after Esc, dismissing")
+                    send_key(window_title, "escape")
+                    await asyncio.sleep(check_wait)
 
                 log.info("Tribe log refresh: pressing L to reopen tribe log")
                 send_key(window_title, "l")
@@ -910,14 +989,28 @@ class TribeWatchApp:
                 continue
 
             self._idle_recovery_attempted = True
+
+            window_title = self.config.general.window_title
+            from tribewatch.capture import is_window_foreground, send_key
+
+            # Skip if ARK isn't focused — see refresh loop comment.
+            if not is_window_foreground(window_title):
+                log.debug("Idle recovery: skipped — ARK not focused")
+                continue
+
             log.warning(
                 "Screen idle for %ds with tribe log closed — pressing L to reopen",
                 int(idle_duration),
             )
 
+            # If the in-game pause menu is open, dismiss it first.
+            if await self._is_esc_menu_open():
+                log.info("Idle recovery: pause menu detected, dismissing before L")
+                send_key(window_title, "escape")
+                await asyncio.sleep(2)
+
             # Press L to try reopening the tribe log
-            from tribewatch.capture import send_key
-            send_key(self.config.general.window_title, "l")
+            send_key(window_title, "l")
 
             # Wait for capture cycle to detect tribe log
             check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 3, 10)
