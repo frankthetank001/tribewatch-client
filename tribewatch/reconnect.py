@@ -489,22 +489,26 @@ class ReconnectSequence:
             )
 
             # Verify the click worked — wait and confirm the button is gone.
-            # Default to "still on title" so that failed captures (PrintWindow
-            # errors, window transitions) don't falsely pass verification.
             await asyncio.sleep(5)
-            still_on_title = True
+            still_on_title = False
+            capture_ok = False
             for _verify in range(3):
                 hwnd = _find_window_by_title(self._window_title)
                 if hwnd:
                     img = _grab_window(hwnd, bbox=None)
                     if img:
-                        if self._find_join_button(img) is None:
-                            # Got a clean capture and the button is gone
-                            still_on_title = False
-                            break
-                        # Button still visible — no need to keep checking
+                        capture_ok = True
+                        if self._find_join_button(img) is not None:
+                            still_on_title = True
                         break
                 await asyncio.sleep(2)
+
+            # If we couldn't capture the window at all (PrintWindow failures
+            # common during game transitions), assume the click landed and
+            # proceed — waiting_load will catch errors.
+            if not capture_ok:
+                log.info("Click verification: capture failed, assuming click landed")
+                break
 
             if not still_on_title:
                 break  # Click worked — proceed to waiting_load
