@@ -1427,7 +1427,7 @@ class TribeWatchApp:
                 event.platform_id,
             )
 
-        if to_send and self._relay:
+        if to_send and self._relay and getattr(self, "_server_id", ""):
             await self._relay.send_join_leave(to_send)
 
         # Prune old dedup entries (older than 60s)
