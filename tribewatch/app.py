@@ -1532,14 +1532,14 @@ class TribeWatchApp:
         # - Always prompt once per app startup if the OCR'd name differs
         # - After that, only re-prompt if the server_id changes (new server)
         saved_tribe = self.config.tribe.tribe_name
-        log.info(
+        log.debug(
             "Tribe name check: saved=%r detected=%r startup_checked=%s",
             saved_tribe, info.tribe_name,
             getattr(self, "_tribe_name_startup_checked", False),
         )
         if saved_tribe and info.tribe_name:
             matches = names_match(saved_tribe, info.tribe_name)
-            log.info("Tribe name names_match result: %s", matches)
+            log.debug("Tribe name names_match result: %s", matches)
             if not matches:
                 startup_check_done = getattr(self, "_tribe_name_startup_checked", False)
                 last_prompt_server = getattr(self, "_tribe_name_last_prompt_server", "")
@@ -1549,7 +1549,7 @@ class TribeWatchApp:
                     and last_prompt_server != current_server
                 )
                 should_prompt = (not startup_check_done) or is_new_server_since_prompt
-                log.info(
+                log.debug(
                     "Tribe name mismatch — should_prompt=%s (startup_done=%s, new_server=%s)",
                     should_prompt, startup_check_done, is_new_server_since_prompt,
                 )
@@ -1558,7 +1558,7 @@ class TribeWatchApp:
                 else:
                     cb = getattr(self, "_on_tribe_name_change_cb", None)
                     pending = getattr(self, "_tribe_name_change_pending", False)
-                    log.info("Tribe name prompt: cb=%s pending=%s", bool(cb), pending)
+                    log.debug("Tribe name prompt: cb=%s pending=%s", bool(cb), pending)
                     if cb and not pending:
                         self._tribe_name_change_pending = True
                         self._tribe_name_startup_checked = True
