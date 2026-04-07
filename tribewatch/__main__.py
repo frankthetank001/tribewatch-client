@@ -570,15 +570,19 @@ def _cmd_run(config_path: Path, *, skip_unverified_setup: bool = False) -> None:
     from dotenv import load_dotenv
     load_dotenv()
 
-    # Kill any existing instance before we start
-    ensure_single_instance()
-
     # Client mode: load ONLY the client config file
     cp = client_config_path(config_path)
     cfg = load_config(cp)
 
     _apply_env_overrides(cfg)
+    # Configure logging BEFORE singleton enforcement so its diagnostic
+    # warnings (process scan results, kill failures, etc) actually land
+    # in tribewatch.log instead of being silently swallowed by the
+    # uninitialized root logger.
     _setup_logging(cfg.general.log_level)
+
+    # Kill any existing instance before we start
+    ensure_single_instance()
 
     # --- Auto-update check (frozen/installed builds only) ---
     from tribewatch.updater import is_frozen
