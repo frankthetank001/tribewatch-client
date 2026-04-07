@@ -550,12 +550,15 @@ class TribeWatchApp:
             if new_id:
                 old_id = getattr(self, "_server_id", "")
                 if old_id and new_id != old_id:
+                    log.info("Server ID changed: %s -> %s (%s)", old_id, new_id, new_name)
                     cb = getattr(self, "_on_server_change_cb", None)
                     if cb:
                         cb(old_id, getattr(self, "_server_name", ""), new_id, new_name)
                     # Don't update _server_id/_server_name here — the
                     # change handler does it after the user confirms.
                 else:
+                    if not old_id:
+                        log.info("Server ID detected: %s (%s)", new_id, new_name)
                     self._server_id = new_id
                     self._server_name = new_name
         except Exception:

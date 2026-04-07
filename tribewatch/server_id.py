@@ -171,7 +171,7 @@ def get_server_info() -> dict[str, str]:
         cleaned = re.sub(r"\s*-\s*\(v[\d.]+\)\s*$", "", rhs)
         m = re.search(r"(\d{3,})$", cleaned)
         if m:
-            log.info("Server ID: detected %s from '%s'", m.group(1), cleaned)
+            log.debug("Server ID: detected %s from '%s'", m.group(1), cleaned)
             return {
                 "server_id": m.group(1),
                 "server_name": cleaned,
