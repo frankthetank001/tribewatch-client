@@ -1084,7 +1084,10 @@ def main() -> None:
 
     # Setup / calibrate commands don't need an existing config
     if args.setup:
-        if not _cmd_setup(config_path):
+        # cmd_setup returns None; treat any non-False return as success and
+        # fall through so the client launches automatically after calibration.
+        result = _cmd_setup(config_path)
+        if result is False:
             return
 
     if args.reset_calibration:
