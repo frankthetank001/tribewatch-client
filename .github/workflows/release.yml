@@ -56,3 +56,29 @@ jobs:
           files: |
             dist/TribeWatch-Setup.exe
             dist/TribeWatch-${{ steps.version.outputs.version }}-portable.zip
+
+      - name: Notify Discord
+        shell: bash
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "DISCORD_RELEASE_WEBHOOK not set — skipping"
+            exit 0
+          fi
+          sleep 3
+          body=$(gh release view "$TAG" --json body --jq .body)
+          if [ ${#body} -gt 3800 ]; then
+            body="${body:0:3800}…
+
+[Read the full release notes](https://github.com/$REPO/releases/tag/$TAG)"
+          fi
+          payload=$(jq -nc \
+            --arg title "🖥️ TribeWatch Client $TAG" \
+            --arg url "https://github.com/$REPO/releases/tag/$TAG" \
+            --arg description "$body" \
+            '{embeds:[{title:$title, url:$url, description:$description, color:3447003, footer:{text:"Client release"}, timestamp:(now|todateiso8601)}]}')
+          curl -fsS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"
