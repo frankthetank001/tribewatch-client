@@ -1059,6 +1059,11 @@ def main() -> None:
         help="Reset screen regions to resolution defaults (discards manual calibration)",
     )
     parser.add_argument(
+        "--reset-all",
+        action="store_true",
+        help="Full reset: deletes client config, calibration, dedup state, and local caches",
+    )
+    parser.add_argument(
         "--test-ocr",
         action="store_true",
         help="Capture once, run OCR, print results, exit",
@@ -1101,6 +1106,53 @@ def main() -> None:
             tomli_w.dump(data, f)
         print(f"Calibration reset. Bboxes cleared from {cp}")
         print("Run TribeWatch again — resolution presets will be auto-applied.")
+        return
+
+    if args.reset_all:
+        from tribewatch.config import client_config_path
+        cp = client_config_path(config_path)
+        removed: list[Path] = []
+
+        # Delete client config
+        if cp.exists():
+            cp.unlink()
+            removed.append(cp)
+
+        # Delete dedup state files and debug artifacts in the working dir
+        work_dir = cp.parent
+        for pattern in (
+            "tribewatch_state*.json",
+            "tribewatch_state*.json.tmp",
+            "tribewatch_calibration_preview.png",
+            "parasaur_calibration_preview.png",
+            "tribe_calibration_preview.png",
+        ):
+            for f in work_dir.glob(pattern):
+                try:
+                    f.unlink()
+                    removed.append(f)
+                except Exception:
+                    pass
+
+        # Delete debug folder contents
+        debug_dir = work_dir / "debug"
+        if debug_dir.exists():
+            for f in debug_dir.iterdir():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+            try:
+                debug_dir.rmdir()
+                removed.append(debug_dir)
+            except Exception:
+                pass
+
+        print("Full reset complete. Removed:")
+        for p in removed:
+            print(f"  - {p}")
+        print()
+        print("Run TribeWatch again to start fresh — you'll go through OAuth and calibration again.")
         return
 
     if args.calibrate:

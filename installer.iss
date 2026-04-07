@@ -41,6 +41,7 @@ Source: "tribewatch.ico"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\tribewatch.ico"
 Name: "{group}\{#MyAppName} Setup"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--setup"; IconFilename: "{app}\tribewatch.ico"
+Name: "{group}\{#MyAppName} (Reset)"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--reset-all"; IconFilename: "{app}\tribewatch.ico"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\tribewatch.ico"; Tasks: desktopicon
 
