@@ -1688,23 +1688,25 @@ class TribeWatchApp:
                     "Window capture: '%s' not found — will retry each cycle",
                     self.config.general.window_title,
                 )
+        cal_res = getattr(self.config.general, "calibration_resolution", None)
+        res_str = f"{cal_res[0]}x{cal_res[1]}" if cal_res and len(cal_res) == 2 else "unknown"
         log.info(
-            "TribeWatch started — capturing every %.1fs, bbox=%s%s",
+            "TribeWatch started — capturing every %.1fs at %s%s",
             self.config.tribe_log.interval,
-            self.config.tribe_log.bbox,
+            res_str,
             f", window='{self.config.general.window_title}'" if self.config.general.window_title else "",
         )
         if self._parasaur_capture:
             log.info(
-                "Parasaur detection enabled — polling every %.1fs, bbox=%s",
+                "Parasaur detection enabled — polling every %.1fs at %s",
                 self.config.parasaur.interval,
-                self.config.parasaur.bbox,
+                res_str,
             )
         if self._tribe_capture:
             log.info(
-                "Tribe window capture enabled — polling every %.1fs, bbox=%s",
+                "Tribe window capture enabled — polling every %.1fs at %s",
                 self.config.tribe.interval,
-                self.config.tribe.bbox,
+                res_str,
             )
 
         # Resolve server_id early so events aren't skipped on first cycle
