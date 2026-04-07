@@ -341,8 +341,13 @@ def client_config_path(server_path: str | Path) -> Path:
 
     tribewatch.toml -> tribewatch_client.toml
     custom.toml -> custom_client.toml
+
+    Idempotent: passing an already-derived client path returns it
+    unchanged so callers don't end up with foo_client_client.toml.
     """
     p = Path(server_path)
+    if p.stem.endswith("_client"):
+        return p
     return p.with_name(p.stem + "_client" + p.suffix)
 
 
