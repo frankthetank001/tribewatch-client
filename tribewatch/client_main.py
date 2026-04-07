@@ -35,6 +35,7 @@ def main() -> None:
         _setup_logging,
     )
     from tribewatch.config import client_config_path, load_config
+    from tribewatch.singleton import ensure_single_instance
     from tribewatch.updater import is_frozen
 
     _set_dpi_awareness()
@@ -124,7 +125,16 @@ def main() -> None:
 
     cfg = load_config(effective_path)
     _apply_env_overrides(cfg)
+    # Logging must be configured BEFORE the singleton scan so its
+    # warnings (process scan results, kill failures, etc) actually
+    # land in tribewatch.log.
     _setup_logging(cfg.general.log_level)
+
+    # Kill any other TribeWatch instance still running. The packaged
+    # exe enters via this client_main module — NOT __main__._cmd_run —
+    # so the singleton call has to live here too. Without this, two
+    # exes can coexist indefinitely with no log output explaining why.
+    ensure_single_instance()
 
     # Prompt for server URL if not set (first launch)
     if not cfg.server.server_url:
