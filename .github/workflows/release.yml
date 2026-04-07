@@ -13,6 +13,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -48,11 +50,49 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist\TribeWatch\* -DestinationPath dist\TribeWatch-${{ steps.version.outputs.version }}-portable.zip
 
+      - name: Build release notes
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${TAG}$" | head -1 || true)
+          if [ -n "${PREV_TAG}" ]; then
+            RANGE="${PREV_TAG}..${TAG}"
+            COMPARE="https://github.com/${REPO}/compare/${PREV_TAG}...${TAG}"
+          else
+            RANGE="${TAG}"
+            COMPARE=""
+          fi
+
+          fmt() {
+            git log --no-merges --pretty=format:'%s' "${RANGE}" \
+              | grep -iE "$1" \
+              | sed -E 's/^[a-z]+(\([^)]*\))?:[[:space:]]*//' \
+              | sed 's/^/- /' || true
+          }
+
+          FEATS=$(fmt '^feat(\([^)]*\))?:')
+          FIXES=$(fmt '^fix(\([^)]*\))?:')
+          OTHER=$(fmt '^(chore|ci|docs|test|refactor|build|perf|style)(\([^)]*\))?:')
+
+          {
+            if [ -n "${FEATS}" ]; then printf '### ✨ Features\n%s\n\n' "${FEATS}"; fi
+            if [ -n "${FIXES}" ]; then printf '### 🐛 Fixes\n%s\n\n' "${FIXES}"; fi
+            if [ -n "${OTHER}" ]; then printf '### 🔧 Other\n%s\n\n' "${OTHER}"; fi
+            if [ -n "${COMPARE}" ]; then printf '**Full changelog**: %s\n' "${COMPARE}"; fi
+          } > release-notes.md
+
+          echo "--- release-notes.md ---"
+          cat release-notes.md
+          echo "--- end ---"
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           draft: false
-          generate_release_notes: true
+          body_path: release-notes.md
           files: |
             dist/TribeWatch-Setup.exe
             dist/TribeWatch-${{ steps.version.outputs.version }}-portable.zip
@@ -75,7 +115,7 @@ jobs:
             body=$(printf '%s…\n\n[Read the full release notes](https://github.com/%s/releases/tag/%s)' "${body:0:3800}" "$REPO" "$TAG")
           fi
           payload=$(jq -nc \
-            --arg title "🖥️ TribeWatch Client $TAG" \
+            --arg title "💻  TribeWatch Client $TAG" \
             --arg url "https://github.com/$REPO/releases/tag/$TAG" \
             --arg description "$body" \
             '{embeds:[{title:$title, url:$url, description:$description, color:3447003, footer:{text:"Client release"}, timestamp:(now|todateiso8601)}]}')
