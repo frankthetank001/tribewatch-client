@@ -659,33 +659,33 @@ class TribeWatchApp:
 
         info = None
 
-        # Try EOS first
+        # Try BattleMetrics first (more reliable, no auth)
         try:
-            from tribewatch.eos import AsyncEOSClient, extract_server_info
+            from tribewatch.eos import BattleMetricsClient, extract_battlemetrics_info
 
-            if getattr(self, "_eos_client", None) is None:
-                self._eos_client = AsyncEOSClient()
+            if getattr(self, "_bm_client", None) is None:
+                self._bm_client = BattleMetricsClient()
 
-            session = await self._eos_client.get_server_by_name(server_name)
-            if session is not None:
-                info = extract_server_info(session)
-                info["source"] = "eos"
+            bm_server = await self._bm_client.get_server_by_name(server_name)
+            if bm_server is not None:
+                info = extract_battlemetrics_info(bm_server)
         except Exception:
-            log.debug("EOS query failed", exc_info=True)
+            log.debug("BattleMetrics query failed", exc_info=True)
 
-        # Fallback to BattleMetrics
+        # Fallback to EOS
         if info is None:
             try:
-                from tribewatch.eos import BattleMetricsClient, extract_battlemetrics_info
+                from tribewatch.eos import AsyncEOSClient, extract_server_info
 
-                if getattr(self, "_bm_client", None) is None:
-                    self._bm_client = BattleMetricsClient()
+                if getattr(self, "_eos_client", None) is None:
+                    self._eos_client = AsyncEOSClient()
 
-                bm_server = await self._bm_client.get_server_by_name(server_name)
-                if bm_server is not None:
-                    info = extract_battlemetrics_info(bm_server)
+                session = await self._eos_client.get_server_by_name(server_name)
+                if session is not None:
+                    info = extract_server_info(session)
+                    info["source"] = "eos"
             except Exception:
-                log.debug("BattleMetrics query failed", exc_info=True)
+                log.debug("EOS query failed", exc_info=True)
 
         if info is None:
             self._eos_fail_count = getattr(self, "_eos_fail_count", 0) + 1
@@ -1528,23 +1528,35 @@ class TribeWatchApp:
         self._tribe_window_fail_since = None
         self._tribe_sessions_closed = False
 
-        # Detect tribe name change — only prompt if server_id also changed
-        # (same server + different OCR name is likely noise, not a real change)
+        # Detect tribe name change:
+        # - Always prompt once per app startup if the OCR'd name differs
+        # - After that, only re-prompt if the server_id changes (new server)
         saved_tribe = self.config.tribe.tribe_name
         if saved_tribe and info.tribe_name:
             if not names_match(saved_tribe, info.tribe_name):
-                saved_server = getattr(self.config.server, "last_server_id", "") or getattr(self, "_server_id", "")
+                startup_check_done = getattr(self, "_tribe_name_startup_checked", False)
+                last_prompt_server = getattr(self, "_tribe_name_last_prompt_server", "")
                 current_server = getattr(self, "_server_id", "")
-                if saved_server and current_server and saved_server == current_server:
+                is_new_server_since_prompt = (
+                    last_prompt_server and current_server
+                    and last_prompt_server != current_server
+                )
+                should_prompt = (not startup_check_done) or is_new_server_since_prompt
+                if not should_prompt:
                     log.debug(
-                        "Tribe name mismatch (%r vs %r) but server_id unchanged (%s) — ignoring",
-                        saved_tribe, info.tribe_name, current_server,
+                        "Tribe name mismatch (%r vs %r) but already prompted this session — ignoring",
+                        saved_tribe, info.tribe_name,
                     )
                 else:
                     cb = getattr(self, "_on_tribe_name_change_cb", None)
                     if cb and not getattr(self, "_tribe_name_change_pending", False):
                         self._tribe_name_change_pending = True
+                        self._tribe_name_startup_checked = True
+                        self._tribe_name_last_prompt_server = current_server
                         cb(saved_tribe, info.tribe_name)
+            else:
+                # Names match — mark startup check as done
+                self._tribe_name_startup_checked = True
 
         # Override with confirmed tribe name to avoid OCR variations in DB/relay
         if self.config.tribe.tribe_name:
