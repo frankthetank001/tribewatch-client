@@ -771,7 +771,7 @@ async def _handle_tribe_name_change(
             cfg.tribe.tribe_name = detected_name
             app.config.tribe.tribe_name = detected_name
             await asyncio.get_event_loop().run_in_executor(
-                None, save_config, cfg, save_path, save_mode,
+                None, lambda: save_config(cfg, save_path, mode=save_mode),
             )
         elif result == IDNO:
             # New tribe — just update the config, old data stays under old name
@@ -779,7 +779,7 @@ async def _handle_tribe_name_change(
             cfg.tribe.tribe_name = detected_name
             app.config.tribe.tribe_name = detected_name
             await asyncio.get_event_loop().run_in_executor(
-                None, save_config, cfg, save_path, save_mode,
+                None, lambda: save_config(cfg, save_path, mode=save_mode),
             )
         else:
             log.info("User chose: ignore tribe name change, keeping %r", old_name)

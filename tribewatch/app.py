@@ -566,6 +566,12 @@ class TribeWatchApp:
         status["server_id"] = getattr(self, "_server_id", "")
         status["server_name"] = getattr(self, "_server_name", "")
 
+        # Client identity (for multi-client view on dashboard)
+        from tribewatch import __version__ as _client_version
+        status["client_version"] = _client_version
+        game_res = getattr(self, "_last_game_resolution", None)
+        status["resolution"] = f"{game_res[0]}x{game_res[1]}" if game_res else ""
+
         # Dynamic bbox scaling — check if game resolution changed
         try:
             self._check_resolution_scaling()
