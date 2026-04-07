@@ -175,7 +175,14 @@ async def download_and_run_installer(download_url: str) -> bool:
         # Build the wait-then-run-installer shim
         pid = os.getpid()
         shim_path = os.path.join(tmp_dir, "run_update.bat")
+        # Inno Setup forensic log lives next to the installer in the temp
+        # dir. If the install ever fails (e.g. file lock issues), this is
+        # the file to inspect — it lists every file Setup tried to write,
+        # every Restart Manager call, and the reason for any failure.
+        log_path = os.path.join(tmp_dir, "install.log")
         # Note: %~f0 = full path to this batch file (for self-delete)
+        # We intentionally do NOT delete the temp dir — the install log
+        # stays around for diagnosis if anything goes wrong.
         shim_body = (
             "@echo off\r\n"
             ":wait\r\n"
@@ -184,7 +191,7 @@ async def download_and_run_installer(download_url: str) -> bool:
             "    timeout /t 1 /nobreak >nul\r\n"
             "    goto wait\r\n"
             ")\r\n"
-            f'start "" "{installer_path}" /SILENT /RESTARTAPPLICATIONS\r\n'
+            f'start "" "{installer_path}" /SILENT /RESTARTAPPLICATIONS /LOG="{log_path}"\r\n'
             'del "%~f0"\r\n'
         )
         with open(shim_path, "w") as f:
