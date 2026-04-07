@@ -532,7 +532,15 @@ def _check_for_updates() -> None:
             print("    ...")
 
     if update["is_installer"]:
-        answer = input("\n  Download and install update now? [Y/n] ").strip().lower()
+        # On a windowed/no-console build (e.g. launched from the start-menu
+        # shortcut), input() will raise or hang because there's no stdin.
+        # In that case auto-accept and proceed to download silently.
+        has_console = sys.stdin is not None and sys.stdin.isatty()
+        if has_console:
+            answer = input("\n  Download and install update now? [Y/n] ").strip().lower()
+        else:
+            log.info("No console attached — auto-accepting update prompt")
+            answer = "y"
         if answer in ("", "y", "yes"):
             print("  Downloading update...")
             try:
@@ -549,7 +557,8 @@ def _check_for_updates() -> None:
             print("  Skipping update.")
     else:
         print(f"\n  Download the update at: {update['release_url']}")
-        input("  Press Enter to continue...")
+        if sys.stdin is not None and sys.stdin.isatty():
+            input("  Press Enter to continue...")
 
     print()
 
