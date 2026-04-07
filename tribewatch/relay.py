@@ -205,6 +205,12 @@ class ServerRelay:
             if msg_id and msg_id in self._pending_acks:
                 self._pending_acks[msg_id].set_result(data.get("ids", []))
 
+        elif msg_type == "events_nack":
+            msg_id = data.get("msg_id")
+            err = data.get("error", "unknown server error")
+            if msg_id and msg_id in self._pending_acks:
+                self._pending_acks[msg_id].set_exception(RuntimeError(f"server rejected batch: {err}"))
+
         elif msg_type == "control":
             command = data.get("command", "")
             msg_id = data.get("msg_id", "")
@@ -386,10 +392,19 @@ class ServerRelay:
                 })
                 await asyncio.wait_for(future, timeout=10.0)
                 log.info("Flushed %d buffered events to server", len(batch))
-            except (asyncio.TimeoutError, Exception):
-                # Put it back and stop flushing
+            except asyncio.TimeoutError:
                 self._event_buffer.appendleft(batch)
-                log.warning("Failed to flush buffered events, will retry on next connect")
+                log.warning(
+                    "Failed to flush %d buffered events: server ack timeout after 10s — will retry on next connect",
+                    len(batch),
+                )
+                break
+            except Exception as e:
+                self._event_buffer.appendleft(batch)
+                log.warning(
+                    "Failed to flush %d buffered events: %s: %s — will retry on next connect",
+                    len(batch), type(e).__name__, e,
+                )
                 break
             finally:
                 self._pending_acks.pop(msg_id, None)
