@@ -655,95 +655,6 @@ async def _handle_reconnect_cancel(app: Any) -> None:
     await seq.cancel()
 
 
-async def _handle_restart(app: Any) -> None:
-    """Restart the client process.
-
-    Triggered by a remote `restart` control command from the dashboard.
-    Cleans up the relay/overlay, releases the singleton PID lockfile,
-    spawns a detached child running the same command line, then exits
-    the current process so the child takes over.
-
-    Why subprocess.Popen instead of os.execv:
-      ``os.execv`` works for `python -m tribewatch` invocations but is
-      flaky on Windows when running from a PyInstaller frozen .exe —
-      the bootloader's console/handle ownership confuses the in-place
-      replacement and the new process effectively dies before it
-      starts. ``Popen`` with ``DETACHED_PROCESS`` reliably hands off to
-      the child on both Python and frozen-exe runs.
-
-    Three launch shapes are supported:
-      1. PyInstaller frozen exe (sys.frozen) — re-launch the .exe.
-      2. Python 3.10+ with sys.orig_argv — preserves `python -m tribewatch`.
-      3. Fallback — `python -m tribewatch <argv...>`.
-    """
-    import os
-    import subprocess
-    import sys
-    log = logging.getLogger(__name__)
-    log.warning("Restart requested via remote control — relaunching process")
-
-    # Build the right launch command for how this process was started.
-    if getattr(sys, "frozen", False):
-        # PyInstaller bundle — re-launch the .exe with the same argv
-        argv = [sys.executable, *sys.argv[1:]]
-    elif hasattr(sys, "orig_argv") and sys.orig_argv:
-        # Python 3.10+: orig_argv preserves how the interpreter was
-        # invoked, including `-m tribewatch` if that was used.
-        argv = list(sys.orig_argv)
-    else:
-        # Fallback: assume `python -m tribewatch` style.
-        argv = [sys.executable, "-m", "tribewatch", *sys.argv[1:]]
-
-    # Try to shut down anything that holds an OS handle so the new
-    # process can grab them cleanly.
-    try:
-        overlay = getattr(app, "_overlay", None)
-        if overlay is not None and hasattr(overlay, "stop"):
-            overlay.stop()
-    except Exception:
-        log.debug("Overlay stop during restart failed", exc_info=True)
-    try:
-        if app._relay is not None:
-            await app._relay.disconnect()
-    except Exception:
-        log.debug("Relay disconnect during restart failed", exc_info=True)
-
-    # Release the singleton lockfile so the child's ensure_single_instance
-    # doesn't try to kill us (the child has a different PID now).
-    try:
-        from tribewatch.singleton import _LOCK_FILE
-        _LOCK_FILE.unlink(missing_ok=True)
-    except Exception:
-        log.debug("Singleton lockfile release during restart failed", exc_info=True)
-
-    # Give the event loop a tick to flush
-    await asyncio.sleep(0.3)
-
-    log.info("Spawning replacement process: %s", " ".join(repr(a) for a in argv))
-    try:
-        if sys.platform == "win32":
-            # DETACHED_PROCESS (0x00000008) — child is fully independent
-            # of the parent's console + lifetime. CREATE_NEW_PROCESS_GROUP
-            # (0x00000200) so Ctrl+C in the parent shell doesn't propagate.
-            DETACHED_PROCESS = 0x00000008
-            CREATE_NEW_PROCESS_GROUP = 0x00000200
-            subprocess.Popen(
-                argv,
-                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                close_fds=True,
-            )
-        else:
-            subprocess.Popen(argv, start_new_session=True, close_fds=True)
-    except Exception:
-        log.exception("Restart spawn failed — staying alive")
-        return
-
-    # Give the child a brief head start, then exit the current process.
-    await asyncio.sleep(0.5)
-    log.info("Restart child spawned — exiting current process")
-    os._exit(0)
-
-
 async def _handle_server_change(
     app: Any, cfg: Any, config_path: Path, old_name: str, new_id: str, new_name: str,
 ) -> None:
@@ -956,6 +867,13 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
     )
     from tribewatch.relay import ServerRelay
 
+    # Soft-restart flag — set by _handle_restart, drained by the run loop.
+    # Allows the dashboard's restart button to tear down + rebuild the app
+    # in-process without exiting the OS process. Critical for the frozen
+    # PyInstaller exe where spawning a fresh child is unreliable
+    # (the parent's MEIPASS temp dir gets cleaned up on exit).
+    _restart_requested = {"value": False}
+
     # Blank out Discord webhooks — server handles dispatch, not the client
     cfg.discord.alert_webhook = ""
     cfg.discord.raid_webhook = ""
@@ -982,7 +900,19 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
         elif command == "reconnect_cancel":
             asyncio.create_task(_handle_reconnect_cancel(app))
         elif command == "restart":
-            asyncio.create_task(_handle_restart(app))
+            # In-process soft restart — flag the run loop and stop the
+            # current app. The wrapping `while _restart_requested[...]`
+            # loop in _run_client tears down the relay/overlay and
+            # rebuilds a fresh TribeWatchApp without spawning a new
+            # process. Required for frozen exe builds where the
+            # PyInstaller MEIPASS temp dir doesn't survive a parent exit.
+            log = logging.getLogger(__name__)
+            log.warning("Restart requested via remote control — soft-restarting in place")
+            _restart_requested["value"] = True
+            try:
+                app.stop()
+            except Exception:
+                log.debug("app.stop() during restart failed", exc_info=True)
 
     def _on_config_update(section: str, data: dict, msg_id: str) -> None:
         # Only save client-owned sections
@@ -1038,9 +968,9 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             _log.error("No client token received — cannot authenticate")
 
     async def _run_client() -> None:
-        nonlocal app
+        nonlocal app, cfg
 
-        # Auto-trigger OAuth if no client_token
+        # Auto-trigger OAuth if no client_token (one-time, before loop)
         if not cfg.server.client_token:
             await _do_client_oauth()
             if not cfg.server.client_token:
@@ -1062,55 +992,86 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             # Always unblock reconnection (set_client_token clears the auth gate)
             relay.set_client_token(cfg.server.client_token)
 
-        relay = ServerRelay(
-            server_url=cfg.server.server_url,
-            auth_token=cfg.server.auth_token,
-            client_token=cfg.server.client_token,
-            reconnect_delay=cfg.server.reconnect_delay,
-            on_control=_on_control,
-            on_config_update=_on_config_update,
-            on_auth_expired=_on_auth_expired,
-        )
-        app = TribeWatchApp(cfg, relay=relay)
-        app._auto_reconnect_cb = lambda: _handle_reconnect(app, auto=True)
-
-        # Start overlay if enabled
-        try:
-            from tribewatch.overlay import StatusOverlay
-            overlay = StatusOverlay(window_title=cfg.general.window_title)
-            overlay.start()
-            app._overlay = overlay
-            log.info("Status overlay started")
-        except Exception:
-            log.debug("Overlay not available", exc_info=True)
-
-        def _on_server_change(old_id, old_name, new_id, new_name):
-            app._paused = True  # pause immediately (sync) before async handler
-            app._eos_last_query = 0  # force EOS refresh on next heartbeat
-            asyncio.create_task(
-                _handle_server_change(app, cfg, config_path, old_name, new_id, new_name)
+        # Soft-restart loop. The body builds a fresh relay + TribeWatchApp,
+        # runs until app.stop() (either user shutdown or remote restart),
+        # cleans up, then either breaks or loops to rebuild.
+        while True:
+            relay = ServerRelay(
+                server_url=cfg.server.server_url,
+                auth_token=cfg.server.auth_token,
+                client_token=cfg.server.client_token,
+                reconnect_delay=cfg.server.reconnect_delay,
+                on_control=_on_control,
+                on_config_update=_on_config_update,
+                on_auth_expired=_on_auth_expired,
             )
+            app = TribeWatchApp(cfg, relay=relay)
+            app._auto_reconnect_cb = lambda: _handle_reconnect(app, auto=True)
 
-        app._on_server_change_cb = _on_server_change
+            # Start overlay if enabled
+            try:
+                from tribewatch.overlay import StatusOverlay
+                overlay = StatusOverlay(window_title=cfg.general.window_title)
+                overlay.start()
+                app._overlay = overlay
+                log.info("Status overlay started")
+            except Exception:
+                log.debug("Overlay not available", exc_info=True)
 
-        def _on_tribe_name_change(old_name, detected_name):
-            app._paused = True
-            asyncio.create_task(
-                _handle_tribe_name_change(app, cfg, config_path, old_name, detected_name)
-            )
+            def _on_server_change(old_id, old_name, new_id, new_name):
+                app._paused = True  # pause immediately (sync) before async handler
+                app._eos_last_query = 0  # force EOS refresh on next heartbeat
+                asyncio.create_task(
+                    _handle_server_change(app, cfg, config_path, old_name, new_id, new_name)
+                )
 
-        app._on_tribe_name_change_cb = _on_tribe_name_change
+            app._on_server_change_cb = _on_server_change
 
-        await relay.start()
+            def _on_tribe_name_change(old_name, detected_name):
+                app._paused = True
+                asyncio.create_task(
+                    _handle_tribe_name_change(app, cfg, config_path, old_name, detected_name)
+                )
 
-        # Send initial config snapshot
-        from dataclasses import asdict as _asdict
-        await relay.send_config(_asdict(cfg))
+            app._on_tribe_name_change_cb = _on_tribe_name_change
 
-        try:
-            await app.run()
-        finally:
-            await relay.stop()
+            await relay.start()
+
+            # Send initial config snapshot
+            from dataclasses import asdict as _asdict
+            await relay.send_config(_asdict(cfg))
+
+            try:
+                await app.run()
+            finally:
+                await relay.stop()
+                # Stop the overlay window/thread so the rebuilt app can
+                # claim a fresh one without two overlapping floating
+                # windows.
+                try:
+                    if getattr(app, "_overlay", None) is not None:
+                        app._overlay.stop()
+                        app._overlay = None
+                except Exception:
+                    log.debug("Overlay stop after run loop failed", exc_info=True)
+
+            if not _restart_requested["value"]:
+                break
+
+            # Soft restart — drain the flag, reload config from disk so
+            # any changes made via remote settings updates are picked up,
+            # and rebuild on the next loop iteration.
+            _restart_requested["value"] = False
+            log.warning("Soft restart: reloading config and rebuilding app")
+            try:
+                cfg = load_config(config_path)
+                # Re-blank server-owned discord webhooks (same as initial setup)
+                cfg.discord.alert_webhook = ""
+                cfg.discord.raid_webhook = ""
+            except Exception:
+                log.exception("Config reload during soft restart failed — keeping old config")
+            # Brief pause so the overlay thread/window has time to fully die
+            await asyncio.sleep(0.3)
 
     app = None  # type: ignore[assignment]
     try:
