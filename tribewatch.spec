@@ -37,6 +37,10 @@ a = Analysis(
         'ch_ppocr_v2_cls',
         'ch_ppocr_v3_det',
         'ch_ppocr_v3_rec',
+        # psutil — used by tribewatch.singleton's process scan.
+        # Imported lazily inside functions, so PyInstaller's static
+        # analyser may miss it without this hint.
+        'psutil',
     ],
     hookspath=[],
     hooksconfig={},

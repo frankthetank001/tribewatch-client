@@ -16,6 +16,10 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "rapidocr-onnxruntime>=1.2.0",
     "pyautogui>=0.9.54",
+    # Used by tribewatch.singleton to enumerate sibling TribeWatch
+    # processes and verify kills. Was previously transitive — now an
+    # explicit dep so the CI build env reliably includes it.
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]
