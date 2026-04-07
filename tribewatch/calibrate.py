@@ -29,9 +29,9 @@ log = logging.getLogger(__name__)
 
 _RESOLUTION_PRESETS: dict[tuple[int, int], dict[str, list[int]]] = {
     (1280, 720): {
-        "tribe_log": [1144, 241, 1419, 706],
-        "parasaur": [936, 156, 1603, 187],
-        "tribe": [759, 274, 1115, 748],
+        "tribe_log": [505, 87, 775, 553],
+        "parasaur": [102, 2, 904, 33],
+        "tribe": [117, 121, 478, 587],
     },
     (1920, 1080): {
         "tribe_log": [758, 128, 1164, 826],
