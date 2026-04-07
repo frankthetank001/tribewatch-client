@@ -34,9 +34,9 @@ _RESOLUTION_PRESETS: dict[tuple[int, int], dict[str, list[int]]] = {
         "tribe": [759, 274, 1115, 748],
     },
     (1920, 1080): {
-        "tribe_log": [1005, 171, 1553, 1104],
-        "parasaur": [195, 6, 1786, 67],
-        "tribe": [221, 215, 970, 1197],
+        "tribe_log": [1078, 127, 1486, 829],
+        "parasaur": [662, 3, 1842, 43],
+        "tribe": [498, 174, 1040, 899],
     },
     (2560, 1080): {
         "tribe_log": [1079, 129, 1481, 825],
@@ -128,6 +128,7 @@ class _OverlayApp:
         action_label: str | None = None,
         action_callback: callable | None = None,
         example_url: str | None = None,
+        window_title: str = "ArkAscended",
     ) -> None:
         self.result: Optional[list[int]] = None
         self._start_x = 0
@@ -135,6 +136,7 @@ class _OverlayApp:
         self._rect_id: Optional[int] = None
         self._kept = False  # True if user clicked "Keep Current"
         self._instruction = instruction
+        self._window_title = window_title
         # Check if any existing bbox is tagged "(current)" — meaning the
         # user already has a calibration for this step and can keep it.
         self._has_current = any(
@@ -167,6 +169,21 @@ class _OverlayApp:
             font=("Segoe UI", 18, "bold"),
         )
 
+        # Get client→screen offset so existing bboxes (stored as client
+        # coords) render in the correct position on the fullscreen overlay.
+        offset_x, offset_y = 0, 0
+        try:
+            import ctypes
+            from tribewatch.capture import _find_window_by_title
+            hwnd = _find_window_by_title(getattr(self, "_window_title", "ArkAscended"))
+            if hwnd:
+                user32 = ctypes.windll.user32
+                pt = (ctypes.c_long * 2)(0, 0)
+                user32.ClientToScreen(hwnd, ctypes.byref(pt))
+                offset_x, offset_y = pt[0], pt[1]
+        except Exception:
+            pass
+
         # Draw existing bboxes as colored rectangles with labels
         if existing_bboxes:
             for label, bbox in existing_bboxes.items():
@@ -176,6 +193,11 @@ class _OverlayApp:
                     label.replace(" (current)", ""), self._DEFAULT_COLOR
                 )
                 left, top, right, bottom = bbox
+                # Convert stored client coords to screen coords for display
+                left += offset_x
+                top += offset_y
+                right += offset_x
+                bottom += offset_y
                 self.canvas.create_rectangle(
                     left, top, right, bottom,
                     outline=color, width=2,
@@ -395,6 +417,30 @@ class _OverlayApp:
         if (right - left) < 10 or (bottom - top) < 10:
             return
 
+        # Convert screen coords → client coords by subtracting the game
+        # window's client area position on screen. This makes bboxes work
+        # regardless of whether the game is fullscreen (offset 0,0) or
+        # windowed on an ultrawide (offset e.g. 320,0).
+        try:
+            import ctypes
+            from tribewatch.capture import _find_window_by_title
+            # The tkinter overlay doesn't know the game window title, so
+            # we look it up via the common default. Calibration should
+            # always have the game running.
+            hwnd = _find_window_by_title(getattr(self, "_window_title", "ArkAscended"))
+            if hwnd:
+                user32 = ctypes.windll.user32
+                # Get client area top-left in screen coordinates
+                pt = (ctypes.c_long * 2)(0, 0)
+                user32.ClientToScreen(hwnd, ctypes.byref(pt))
+                offset_x, offset_y = pt[0], pt[1]
+                left -= offset_x
+                top -= offset_y
+                right -= offset_x
+                bottom -= offset_y
+        except Exception:
+            pass  # Fall back to raw screen coords if conversion fails
+
         bbox = [left, top, right, bottom]
         self.result = bbox
         self.root.destroy()
@@ -415,6 +461,7 @@ def run_overlay(
     action_label: str | None = None,
     action_callback: callable | None = None,
     example_url: str | None = None,
+    window_title: str = "ArkAscended",
 ) -> tuple[Optional[list[int]], bool]:
     """Launch the calibration overlay and return (bbox, kept).
 
@@ -457,5 +504,6 @@ def run_overlay(
         kwargs["action_callback"] = action_callback
     if example_url is not None:
         kwargs["example_url"] = example_url
+    kwargs["window_title"] = window_title
     app = _OverlayApp(**kwargs)
     return app.run(), app._kept
