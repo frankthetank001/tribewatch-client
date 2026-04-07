@@ -97,8 +97,11 @@ jobs:
             dist/TribeWatch-Setup.exe
             dist/TribeWatch-${{ steps.version.outputs.version }}-portable.zip
 
+  notify:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
       - name: Notify Discord
-        shell: bash
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -110,13 +113,15 @@ jobs:
             exit 0
           fi
           sleep 3
-          body=$(gh release view "$TAG" --json body --jq .body)
+          body=$(gh release view "$TAG" --repo "$REPO" --json body --jq .body)
           if [ ${#body} -gt 3800 ]; then
             body=$(printf '%s…\n\n[Read the full release notes](https://github.com/%s/releases/tag/%s)' "${body:0:3800}" "$REPO" "$TAG")
           fi
-          payload=$(jq -nc \
+          jq -nc \
             --arg title "💻  TribeWatch Client $TAG" \
             --arg url "https://github.com/$REPO/releases/tag/$TAG" \
             --arg description "$body" \
-            '{embeds:[{title:$title, url:$url, description:$description, color:3447003, footer:{text:"Client release"}, timestamp:(now|todateiso8601)}]}')
-          curl -fsS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"
+            '{embeds:[{title:$title, url:$url, description:$description, color:3447003, footer:{text:"Client release"}, timestamp:(now|todateiso8601)}]}' \
+            > payload.json
+          curl -fsS -H "Content-Type: application/json; charset=utf-8" \
+               --data-binary @payload.json "$DISCORD_WEBHOOK"
