@@ -449,67 +449,58 @@ def _discover_tribe_name_console(
     print()
 
 
-def _apply_resolution_preset(cfg: object) -> None:
-    """Detect game resolution and auto-apply bbox presets if available.
+def _apply_resolution_preset(cfg: object) -> bool:
+    """Detect game resolution and apply derived bbox presets.
 
-    If the resolution is recognized, all three capture regions (tribe_log,
-    parasaur, tribe) are overridden with the preset values.  If unknown,
-    a warning is printed telling the user to calibrate.
+    Returns True if the resolution is verified or matches an existing
+    calibration; False if the resolution is unverified and the user
+    has no calibration for it (caller should force the setup wizard).
     """
     log = logging.getLogger(__name__)
     try:
-        from tribewatch.calibrate import get_preset
+        from tribewatch.calibrate import derive_preset, is_verified_resolution
         from tribewatch.server_id import get_game_resolution
 
         resolution = get_game_resolution()
         if resolution is None:
             log.debug("Could not detect game resolution — skipping preset auto-apply")
-            return
+            return True
 
-        preset = get_preset(resolution)
-        if preset is None:
-            log.warning(
-                "No bbox preset for resolution %dx%d — run --setup to calibrate",
-                resolution[0], resolution[1],
-            )
-            print(
-                f"\n*** Unknown resolution {resolution[0]}x{resolution[1]} — "
-                "run  python -m tribewatch --setup  to calibrate screen regions ***\n"
-            )
-            return
-
-        # Only apply presets if:
-        # - No manual calibration exists (no calibration_resolution set), OR
-        # - The game resolution changed since last calibration
         cal_res = getattr(cfg.general, "calibration_resolution", None)
-        if cal_res and tuple(cal_res) == resolution:
+        cal_matches = bool(cal_res) and tuple(cal_res) == resolution
+
+        # User has already calibrated for this exact resolution — keep their bboxes.
+        if cal_matches:
             log.debug(
-                "Resolution %dx%d matches calibration — keeping user bboxes",
+                "Resolution %dx%d matches saved calibration — keeping user bboxes",
                 resolution[0], resolution[1],
             )
-            return
+            return True
+
+        verified = is_verified_resolution(resolution)
+        preset = derive_preset(resolution)
 
         if cal_res and tuple(cal_res) != resolution:
             log.info(
-                "Resolution changed from %s to %dx%d — re-applying presets",
+                "Resolution changed from %s to %dx%d — applying derived preset",
                 cal_res, resolution[0], resolution[1],
             )
 
-        # Apply preset bboxes to the live config
         cfg.tribe_log.bbox = list(preset["tribe_log"])
         cfg.parasaur.bbox = list(preset["parasaur"])
         cfg.tribe.bbox = list(preset["tribe"])
-
-        # Store calibration resolution so heartbeat knows the baseline
         cfg.general.calibration_resolution = list(resolution)
 
         log.info(
-            "Auto-applied bbox preset for %dx%d — tribe_log=%s parasaur=%s tribe=%s",
+            "Applied %s bbox preset for %dx%d — tribe_log=%s parasaur=%s tribe=%s",
+            "verified" if verified else "derived",
             resolution[0], resolution[1],
             preset["tribe_log"], preset["parasaur"], preset["tribe"],
         )
+        return verified
     except Exception:
         log.debug("Resolution preset auto-apply failed", exc_info=True)
+        return True
 
 
 def _check_for_updates() -> None:
@@ -585,7 +576,33 @@ def _cmd_run(config_path: Path) -> None:
     if is_frozen():
         _check_for_updates()
 
-    _apply_resolution_preset(cfg)
+    verified = _apply_resolution_preset(cfg)
+    if not verified:
+        try:
+            from tribewatch.server_id import get_game_resolution
+            res = get_game_resolution()
+        except Exception:
+            res = None
+        res_str = f"{res[0]}x{res[1]}" if res else "your current"
+        print()
+        print("=" * 70)
+        print(f"  Unverified resolution: {res_str}")
+        print("=" * 70)
+        print(
+            "  TribeWatch derived capture regions for this resolution from the\n"
+            "  1920x1080 baseline, but it has not been hand-verified. The setup\n"
+            "  wizard will now open so you can confirm or adjust the regions."
+        )
+        print("=" * 70)
+        print()
+        try:
+            _cmd_setup(cp)
+            # Reload config so the user's confirmed bboxes are picked up
+            cfg = load_config(cp)
+            _apply_env_overrides(cfg)
+        except Exception:
+            log = logging.getLogger(__name__)
+            log.exception("Forced setup wizard failed")
 
     # --- Tribe name discovery ---
     if cfg.tribe.bbox:

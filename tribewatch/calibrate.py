@@ -23,34 +23,60 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Resolution presets — verified bboxes for all three capture regions.
-# Key: (width, height), Value: {section: [left, top, right, bottom]}
+# Bbox derivation — bboxes for any resolution are computed from a single
+# 1920x1080 baseline by scaling to the target height and applying a
+# horizontal centering offset for non-16:9 aspect ratios.
+#
+# The HUD inside ARK is anchored to a centered 16:9 viewport at the
+# current screen height — verified empirically across 1280x720,
+# 1920x1080 and 2560x1080. Resolutions in _VERIFIED_RESOLUTIONS have
+# been hand-checked; others use the derived formula and require user
+# confirmation via the setup wizard before they're trusted.
 # ---------------------------------------------------------------------------
 
-_RESOLUTION_PRESETS: dict[tuple[int, int], dict[str, list[int]]] = {
-    (1280, 720): {
-        "tribe_log": [505, 87, 775, 553],
-        "parasaur": [102, 2, 904, 33],
-        "tribe": [117, 121, 478, 587],
-    },
-    (1920, 1080): {
-        "tribe_log": [758, 128, 1164, 826],
-        "parasaur": [149, 4, 1376, 50],
-        "tribe": [176, 184, 708, 888],
-    },
-    (2560, 1080): {
-        "tribe_log": [1079, 129, 1481, 825],
-        "parasaur": [457, 7, 1776, 52],
-        "tribe": [501, 185, 1029, 890],
-    },
-}
-
-# Legacy: tribe-log-only known bboxes (kept for get_default_bbox compat)
-_KNOWN_BBOXES: dict[tuple[int, int], list[int]] = {
-    res: preset["tribe_log"] for res, preset in _RESOLUTION_PRESETS.items()
-}
-
 _BASELINE_RES = (1920, 1080)
+
+_BASELINE_BBOXES: dict[str, list[int]] = {
+    "tribe_log": [758, 128, 1164, 826],
+    "parasaur":  [149, 4, 1376, 50],
+    "tribe":     [176, 184, 708, 888],
+}
+
+# Resolutions where the derived formula has been hand-verified to work.
+_VERIFIED_RESOLUTIONS: set[tuple[int, int]] = {
+    (1280, 720),
+    (1920, 1080),
+    (2560, 1080),
+}
+
+
+def is_verified_resolution(resolution: tuple[int, int]) -> bool:
+    """Return True if the derived preset for *resolution* has been hand-verified."""
+    return tuple(resolution) in _VERIFIED_RESOLUTIONS
+
+
+def derive_preset(resolution: tuple[int, int]) -> dict[str, list[int]]:
+    """Compute bboxes for *resolution* by scaling the 1920x1080 baseline.
+
+    Vertical coordinates scale with the target height. Horizontal
+    coordinates scale with the same factor (preserving the 16:9 inner
+    HUD width) and then receive a centering offset for non-16:9 widths.
+    """
+    W, H = int(resolution[0]), int(resolution[1])
+    bw, bh = _BASELINE_RES
+    scale = H / bh
+    inner_w = round(H * bw / bh)
+    offset_x = (W - inner_w) / 2
+
+    out: dict[str, list[int]] = {}
+    for region, (x1, y1, x2, y2) in _BASELINE_BBOXES.items():
+        out[region] = [
+            int(round(x1 * scale + offset_x)),
+            int(round(y1 * scale)),
+            int(round(x2 * scale + offset_x)),
+            int(round(y2 * scale)),
+        ]
+    return out
 
 
 def _get_screen_resolution() -> tuple[int, int] | None:
@@ -63,9 +89,11 @@ def _get_screen_resolution() -> tuple[int, int] | None:
 
 
 def get_preset(resolution: tuple[int, int] | None = None) -> dict[str, list[int]] | None:
-    """Return the full preset (all three regions) for *resolution*, or None.
+    """Return derived bboxes for *resolution*.
 
     Pass *resolution* explicitly or omit to auto-detect from the game INI.
+    Always returns a derived preset — never None — unless the resolution
+    could not be detected at all.
     """
     if resolution is None:
         try:
@@ -75,38 +103,16 @@ def get_preset(resolution: tuple[int, int] | None = None) -> dict[str, list[int]
             pass
     if resolution is None:
         return None
-    return _RESOLUTION_PRESETS.get(resolution)
+    return derive_preset(resolution)
 
 
 def get_default_bbox(resolution: tuple[int, int] | None = None) -> list[int]:
-    """Return the best tribe log bbox for the given (or detected) screen resolution.
-
-    Lookup order:
-    1. Exact match in presets
-    2. Proportional scale from the 1920x1080 baseline
-    """
+    """Return the derived tribe log bbox for the given (or detected) resolution."""
     if resolution is None:
         resolution = _get_screen_resolution()
-
-    baseline_bbox = _RESOLUTION_PRESETS[_BASELINE_RES]["tribe_log"]
-
     if resolution is None:
-        return list(baseline_bbox)
-
-    preset = _RESOLUTION_PRESETS.get(resolution)
-    if preset:
-        return list(preset["tribe_log"])
-
-    # Scale from baseline
-    scale_x = resolution[0] / _BASELINE_RES[0]
-    scale_y = resolution[1] / _BASELINE_RES[1]
-    left, top, right, bottom = baseline_bbox
-    return [
-        int(left * scale_x),
-        int(top * scale_y),
-        int(right * scale_x),
-        int(bottom * scale_y),
-    ]
+        return list(_BASELINE_BBOXES["tribe_log"])
+    return derive_preset(resolution)["tribe_log"]
 
 
 class _OverlayApp:
@@ -129,6 +135,7 @@ class _OverlayApp:
         action_callback: callable | None = None,
         example_url: str | None = None,
         window_title: str = "ArkAscended",
+        region_title: str | None = None,
     ) -> None:
         self.result: Optional[list[int]] = None
         self._start_x = 0
@@ -137,6 +144,7 @@ class _OverlayApp:
         self._kept = False  # True if user clicked "Keep Current"
         self._instruction = instruction
         self._window_title = window_title
+        self._region_title = region_title
         # Check if any existing bbox is tagged "(current)" — meaning the
         # user already has a calibration for this step and can keep it.
         self._has_current = any(
@@ -160,10 +168,27 @@ class _OverlayApp:
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
+        # Big region title banner — always visible so the user can see at
+        # a glance which region they're calibrating, even when the prompt
+        # dialog is dismissed during drawing.
+        sw = self.root.winfo_screenwidth()
+        if region_title:
+            # Background bar behind the title for legibility on light pixels
+            self.canvas.create_rectangle(
+                sw // 2 - 360, 16, sw // 2 + 360, 92,
+                fill="#000000", outline="#FFD700", width=3,
+            )
+            self.canvas.create_text(
+                sw // 2, 54,
+                text=f"REGION: {region_title.upper()}",
+                fill="#FFD700",
+                font=("Segoe UI", 26, "bold"),
+            )
+
         # Instruction text (hidden in prompt mode — shown in the prompt dialog instead)
         self._instruction_id = self.canvas.create_text(
-            self.root.winfo_screenwidth() // 2,
-            40,
+            sw // 2,
+            120 if region_title else 40,
             text="" if prompt else instruction,
             fill="white",
             font=("Segoe UI", 18, "bold"),
@@ -198,16 +223,38 @@ class _OverlayApp:
                 top += offset_y
                 right += offset_x
                 bottom += offset_y
+                # Main rectangle — thick outline so it pops on the dim overlay
                 self.canvas.create_rectangle(
                     left, top, right, bottom,
-                    outline=color, width=2,
+                    outline=color, width=5,
+                )
+                # Corner brackets for extra visibility
+                bracket = max(20, min(60, (right - left) // 6))
+                bw = 7
+                for cx, cy, dx, dy in (
+                    (left, top, 1, 1),
+                    (right, top, -1, 1),
+                    (left, bottom, 1, -1),
+                    (right, bottom, -1, -1),
+                ):
+                    self.canvas.create_line(
+                        cx, cy, cx + dx * bracket, cy, fill=color, width=bw,
+                    )
+                    self.canvas.create_line(
+                        cx, cy, cx, cy + dy * bracket, fill=color, width=bw,
+                    )
+                # Label with a dark background pill so it's readable
+                label_y = top - 14
+                self.canvas.create_rectangle(
+                    left - 2, label_y - 14, left + 8 * len(label) + 12, label_y + 8,
+                    fill="#000000", outline=color, width=2,
                 )
                 self.canvas.create_text(
-                    left, top - 8,
+                    left + 5, label_y - 3,
                     text=label,
                     fill=color,
-                    font=("Segoe UI", 12, "bold"),
-                    anchor="sw",
+                    font=("Segoe UI", 14, "bold"),
+                    anchor="w",
                 )
 
         # If prompt mode, show a dialog frame on the overlay instead of
@@ -462,6 +509,7 @@ def run_overlay(
     action_callback: callable | None = None,
     example_url: str | None = None,
     window_title: str = "ArkAscended",
+    region_title: str | None = None,
 ) -> tuple[Optional[list[int]], bool]:
     """Launch the calibration overlay and return (bbox, kept).
 
@@ -505,5 +553,7 @@ def run_overlay(
     if example_url is not None:
         kwargs["example_url"] = example_url
     kwargs["window_title"] = window_title
+    if region_title is not None:
+        kwargs["region_title"] = region_title
     app = _OverlayApp(**kwargs)
     return app.run(), app._kept

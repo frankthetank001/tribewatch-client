@@ -340,6 +340,7 @@ def cmd_setup(config_path: Path) -> None:
                 action_callback=action_callback,
                 example_url=example_url,
                 window_title=window_title,
+                region_title=label,
             )
         except Exception as exc:
             print(f"  Overlay failed ({exc}). Skipping this step.")
@@ -406,6 +407,7 @@ def cmd_calibrate(config_path: Path) -> None:
             prompt=prompt_text,
             example_url="https://raw.githubusercontent.com/frankthetank001/tribewatch-client/main/docs/calibration_tribe_log.png",
             window_title=cfg.general.window_title,
+            region_title="Tribe Log",
         )
     except Exception as exc:
         print(f"Overlay failed ({exc}). Falling back to manual input.")
@@ -478,6 +480,7 @@ def cmd_calibrate_parasaur(config_path: Path) -> None:
             prompt=prompt_text,
             example_url="https://raw.githubusercontent.com/frankthetank001/tribewatch-client/main/docs/calibration_parasaur.png",
             window_title=cfg.general.window_title,
+            region_title="Parasaur",
         )
     except Exception as exc:
         print(f"Overlay failed ({exc}). Falling back to manual input.")
@@ -535,6 +538,7 @@ def cmd_calibrate_tribe(config_path: Path) -> None:
             prompt=prompt_text,
             example_url="https://raw.githubusercontent.com/frankthetank001/tribewatch-client/main/docs/calibration_tribe_members.png",
             window_title=cfg.general.window_title,
+            region_title="Tribe Members List",
         )
     except Exception as exc:
         print(f"Overlay failed ({exc}). Falling back to manual input.")
