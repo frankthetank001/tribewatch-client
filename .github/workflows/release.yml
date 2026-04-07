@@ -72,9 +72,7 @@ jobs:
           sleep 3
           body=$(gh release view "$TAG" --json body --jq .body)
           if [ ${#body} -gt 3800 ]; then
-            body="${body:0:3800}…
-
-[Read the full release notes](https://github.com/$REPO/releases/tag/$TAG)"
+            body=$(printf '%s…\n\n[Read the full release notes](https://github.com/%s/releases/tag/%s)' "${body:0:3800}" "$REPO" "$TAG")
           fi
           payload=$(jq -nc \
             --arg title "🖥️ TribeWatch Client $TAG" \
