@@ -65,13 +65,17 @@ _PYTHON_EXE_NAMES = {"python.exe", "pythonw.exe", "python3.exe"}
 
 
 def _find_other_tribewatch_pids() -> list[int]:
-    """Enumerate every running TribeWatch instance other than ourselves.
+    """Enumerate other TribeWatch instances of the SAME launch flavour.
 
-    Frozen install → only matches processes with the SAME exe name as
-    ourselves (TribeWatch.exe or TribeWatch-Dev.exe), so dev and stable
-    installs can coexist. Source run → matches both frozen variants
-    AND python with -m tribewatch in argv (so launching the dev source
-    will tear down any stale frozen instance for testing).
+    Each kind of launch only kills its own kind:
+      - Frozen TribeWatch.exe → other TribeWatch.exe processes only.
+      - Frozen TribeWatch-Dev.exe → other TribeWatch-Dev.exe only.
+      - Source `python -m tribewatch` → other python processes with
+        `tribewatch` in argv only.
+
+    This lets dev + stable installs coexist with each other AND with
+    a source-mode dev session, without any of them stomping on each
+    other when launched.
     """
     try:
         import psutil
@@ -92,14 +96,11 @@ def _find_other_tribewatch_pids() -> list[int]:
                 if name == own_name:
                     matches.append(pid)
                 continue
-            # Source run — broader sweep
-            if name in _FROZEN_EXE_NAMES:
-                matches.append(pid)
-                continue
+            # Source run — only match other source-mode python processes
+            # running tribewatch. Don't touch any frozen exe.
             if name in _PYTHON_EXE_NAMES:
                 cmdline = proc.info.get("cmdline") or []
                 joined = " ".join(cmdline).lower()
-                # Match `python -m tribewatch` and similar
                 if "tribewatch" in joined and (
                     "-m tribewatch" in joined
                     or "tribewatch\\__main__" in joined
