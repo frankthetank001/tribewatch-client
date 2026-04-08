@@ -99,8 +99,15 @@ def main() -> None:
     config_path: Path = args.config
 
     if args.setup:
-        _cmd_setup(config_path)
-        return
+        # _cmd_setup returns None on success / False on user cancel.
+        # Mirror __main__.main() behaviour: fall through after a
+        # successful setup so the client launches automatically.
+        # Without this, the Start Menu "Setup" shortcut completes
+        # calibration and silently exits, leaving the user staring
+        # at nothing.
+        result = _cmd_setup(config_path)
+        if result is False:
+            return
 
     if args.calibrate:
         _cmd_calibrate(config_path)
