@@ -275,6 +275,63 @@ def _apply_env_overrides(cfg: object) -> None:
     # owner_discord_id lives in discord config (per-tribe).
 
 
+def _custom_button_dialog(
+    title: str, message: str, buttons: list[tuple[str, str]],
+    default: str = "",
+) -> str:
+    """Show a modal dialog with arbitrarily-labelled buttons.
+
+    *buttons* is a list of ``(button_text, return_value)`` tuples.
+    The dialog returns the value of the clicked button, or empty
+    string if the window was closed.
+    """
+    import tkinter as tk
+
+    result = {"value": ""}
+    root = tk.Tk()
+    root.title(title)
+    root.attributes("-topmost", True)
+    root.resizable(False, False)
+    root.configure(padx=20, pady=20)
+
+    tk.Label(
+        root, text=message, justify="left", anchor="w", font=("Segoe UI", 10),
+    ).pack(fill="x")
+
+    btn_frame = tk.Frame(root)
+    btn_frame.pack(fill="x", pady=(16, 0))
+
+    def _make_cb(value: str):
+        def _cb() -> None:
+            result["value"] = value
+            root.destroy()
+        return _cb
+
+    default_btn = None
+    for text, value in buttons:
+        b = tk.Button(
+            btn_frame, text=text, command=_make_cb(value),
+            padx=12, pady=4,
+        )
+        b.pack(side="left", padx=4)
+        if value == default:
+            default_btn = b
+    if default_btn is not None:
+        default_btn.focus_set()
+        root.bind("<Return>", lambda _e: default_btn.invoke())
+
+    # Center on screen
+    root.update_idletasks()
+    w = root.winfo_width()
+    h = root.winfo_height()
+    sw = root.winfo_screenwidth()
+    sh = root.winfo_screenheight()
+    root.geometry(f"+{(sw - w) // 2}+{(sh - h) // 3}")
+
+    root.mainloop()
+    return result["value"]
+
+
 def _discover_and_confirm_tribe_name(
     cfg: object, config_path: Path, mode: str = "client",
 ) -> None:
@@ -307,14 +364,10 @@ def _discover_tribe_name_win32(
 
     from tribewatch.config import save_config
 
-    MB_OK = 0x00
     MB_YESNO = 0x04
-    MB_YESNOCANCEL = 0x03
     MB_ICONQUESTION = 0x20
-    MB_ICONINFORMATION = 0x40
     MB_TOPMOST = 0x40000
     IDYES = 6
-    IDNO = 7
 
     title = "TribeWatch \u2014 Tribe Name"
 
@@ -350,41 +403,35 @@ def _discover_tribe_name_win32(
                 save_config(cfg, config_path, mode=mode)
     else:
         if detected and not _tribe_names_match(saved, detected):
-            # Three-button choice: Keep Original / Rename / New Tribe.
-            # Win32 MessageBox can't relabel buttons, so we use
-            # YESNOCANCEL with explicit instructions in the body and a
-            # legend mapping each button to one of the three actions.
-            IDCANCEL = 2
-            result = ctypes.windll.user32.MessageBoxW(
-                0,
+            choice = _custom_button_dialog(
+                title,
                 (
                     f"Tribe name mismatch:\n\n"
                     f'Saved:      "{saved}"\n'
-                    f'Detected:  "{detected}"\n\n'
-                    f"Yes  = Rename saved tribe to detected name\n"
-                    f"No   = Treat detected as a NEW tribe\n"
-                    f"Cancel = Keep original (ignore detected)"
+                    f'Detected:  "{detected}"'
                 ),
-                title,
-                MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST,
+                buttons=[
+                    ("Rename saved tribe", "rename"),
+                    ("Treat as new tribe", "new"),
+                    ("Keep original", "keep"),
+                ],
+                default="keep",
             )
-            if result == IDYES:
-                # Rename: adopt detected name locally. Server-side rename
-                # cascade is available via POST /api/tribe/{id}/rename and
-                # should be triggered from the dashboard once connected;
-                # the local config change here keeps the client and the
-                # renamed server tribe in sync after that.
+            if choice == "rename":
+                # Adopt detected name locally. Server-side rename
+                # cascade is available via POST /api/tribe/{id}/rename
+                # and should be triggered from the dashboard once
+                # connected.
                 cfg.tribe.tribe_name = detected
                 save_config(cfg, config_path, mode=mode)
-            elif result == IDNO:
-                # New tribe: switch local config to the detected name.
-                # The server will report tribe_unknown on first connect
-                # (see ClientHandler._resolve_tribe_id) and the operator
-                # can finish creating it from the dashboard.
+            elif choice == "new":
+                # Switch local config to the detected name. The server
+                # will report tribe_unknown on first connect and the
+                # operator can finish creating it from the dashboard.
                 cfg.tribe.tribe_name = detected
                 save_config(cfg, config_path, mode=mode)
             else:
-                # Cancel / dismissed: keep saved name unchanged.
+                # keep / closed: keep saved name unchanged.
                 pass
 
 
@@ -780,29 +827,21 @@ async def _handle_tribe_name_change(
     log.info("Tribe name change detected: %r -> %r — pausing monitoring", old_name, detected_name)
 
     try:
-        import ctypes
-
-        MB_YESNOCANCEL = 0x03
-        MB_ICONQUESTION = 0x20
-        MB_TOPMOST = 0x40000
-        IDYES = 6
-        IDNO = 7
-        # IDCANCEL = 2
-
-        result = await asyncio.get_event_loop().run_in_executor(
+        choice = await asyncio.get_event_loop().run_in_executor(
             None,
-            ctypes.windll.user32.MessageBoxW,
-            0,
+            _custom_button_dialog,
+            "TribeWatch \u2014 Tribe Name Changed",
             (
                 f"Tribe name changed!\n\n"
                 f'Previous:  "{old_name}"\n'
-                f'Detected:  "{detected_name}"\n\n'
-                f"Yes = Rename existing tribe to new name\n"
-                f"No = New tribe (keep old data separate)\n"
-                f"Cancel = Ignore (keep using old name)"
+                f'Detected:  "{detected_name}"'
             ),
-            "TribeWatch \u2014 Tribe Name Changed",
-            MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST,
+            [
+                ("Rename existing tribe", "rename"),
+                ("Track as new tribe", "new"),
+                ("Ignore (keep old name)", "ignore"),
+            ],
+            "ignore",
         )
 
         from tribewatch.config import client_config_path, save_config
@@ -810,7 +849,7 @@ async def _handle_tribe_name_change(
         save_path = client_config_path(config_path)
         save_mode = "client"
 
-        if result == IDYES:
+        if choice == "rename":
             # Rename existing tribe in all stores
             log.info("User chose: rename tribe %r -> %r", old_name, detected_name)
             tribe_store = getattr(app, "_tribe_store", None)
@@ -824,7 +863,7 @@ async def _handle_tribe_name_change(
             await asyncio.get_event_loop().run_in_executor(
                 None, lambda: save_config(cfg, save_path, mode=save_mode),
             )
-        elif result == IDNO:
+        elif choice == "new":
             # New tribe — just update the config, old data stays under old name
             log.info("User chose: new tribe %r (old data kept as %r)", detected_name, old_name)
             cfg.tribe.tribe_name = detected_name
@@ -868,14 +907,6 @@ async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
         log.warning("tribe_unknown but no client_token configured — cannot call server API")
         return
 
-    import ctypes
-    MB_YESNOCANCEL = 0x03
-    MB_YESNO = 0x04
-    MB_ICONQUESTION = 0x20
-    MB_TOPMOST = 0x40000
-    IDYES = 6
-    IDNO = 7
-    IDCANCEL = 2
     title = "TribeWatch \u2014 Tribe Setup"
 
     loop = asyncio.get_event_loop()
@@ -887,17 +918,22 @@ async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
         body = (
             f'Server doesn\'t recognise tribe "{detected}" on this ARK server.\n\n'
             f'Your existing tribe here:\n'
-            f'    "{cand_name}"\n\n'
-            f'Yes  = Rename "{cand_name}" -> "{detected}"\n'
-            f'No   = Create "{detected}" as a new tribe\n'
-            f'Cancel = Keep using "{cand_name}" (ignore detected name)'
+            f'    "{cand_name}"'
         )
-        result = await loop.run_in_executor(
-            None, ctypes.windll.user32.MessageBoxW,
-            0, body, title, MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST,
+        choice = await loop.run_in_executor(
+            None,
+            _custom_button_dialog,
+            title,
+            body,
+            [
+                (f'Rename "{cand_name}" → "{detected}"', "rename"),
+                (f'Create "{detected}" as new tribe', "new"),
+                (f'Keep "{cand_name}" (ignore detected)', "keep"),
+            ],
+            "keep",
         )
         try:
-            if result == IDYES and cand_id:
+            if choice == "rename" and cand_id:
                 log.info("tribe_unknown: renaming tribe_id=%d %r -> %r",
                          cand_id, cand_name, detected)
                 await server_api.rename_tribe(
@@ -908,7 +944,7 @@ async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
                 await loop.run_in_executor(
                     None, lambda: save_config(cfg, save_path, mode=save_mode),
                 )
-            elif result == IDNO:
+            elif choice == "new":
                 log.info("tribe_unknown: creating new tribe %r on %r", detected, server_id)
                 await server_api.claim_tribe(
                     server_url, client_token, name=detected, server_id=server_id,
@@ -930,15 +966,20 @@ async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
     if not candidates:
         body = (
             f'Server doesn\'t recognise tribe "{detected}" on this ARK server,\n'
-            f'and you don\'t have any other tribes here yet.\n\n'
-            f'Yes = Create "{detected}" as a new tribe\n'
-            f'No  = Cancel (do nothing)'
+            f'and you don\'t have any other tribes here yet.'
         )
-        result = await loop.run_in_executor(
-            None, ctypes.windll.user32.MessageBoxW,
-            0, body, title, MB_YESNO | MB_ICONQUESTION | MB_TOPMOST,
+        choice = await loop.run_in_executor(
+            None,
+            _custom_button_dialog,
+            title,
+            body,
+            [
+                (f'Create "{detected}" as new tribe', "create"),
+                ("Cancel", "cancel"),
+            ],
+            "cancel",
         )
-        if result == IDYES:
+        if choice == "create":
             try:
                 log.info("tribe_unknown: claiming new tribe %r on %r", detected, server_id)
                 await server_api.claim_tribe(
