@@ -12,7 +12,7 @@ import tomli_w
 
 @dataclass
 class TribeLogConfig:
-    bbox: list[int] = field(default_factory=lambda: [0, 0, 800, 600])
+    bbox: list[int] = field(default_factory=list)  # empty = needs calibration
     interval: float = 2.0
     ocr_engine: str = "paddleocr"  # winrt / tesseract / easyocr / paddleocr
     upscale: int = 2
@@ -253,13 +253,16 @@ _register_nested_object(ParasaurConfig, "babies_alerts", ParasaurAlertSettings)
 def validate_config(cfg: TribeWatchConfig) -> None:
     """Validate a loaded config, raising ValueError on problems."""
     bbox = cfg.tribe_log.bbox
-    if len(bbox) != 4 or not all(isinstance(v, int) for v in bbox):
-        raise ValueError(f"tribe_log.bbox must be 4 integers, got {bbox!r}")
-    left, top, right, bottom = bbox
-    if left >= right:
-        raise ValueError(f"tribe_log.bbox left ({left}) must be < right ({right})")
-    if top >= bottom:
-        raise ValueError(f"tribe_log.bbox top ({top}) must be < bottom ({bottom})")
+    # Empty bbox = uncalibrated; the run path forces the setup wizard
+    # before reaching capture, so an empty value is valid at load time.
+    if bbox:
+        if len(bbox) != 4 or not all(isinstance(v, int) for v in bbox):
+            raise ValueError(f"tribe_log.bbox must be 4 integers, got {bbox!r}")
+        left, top, right, bottom = bbox
+        if left >= right:
+            raise ValueError(f"tribe_log.bbox left ({left}) must be < right ({right})")
+        if top >= bottom:
+            raise ValueError(f"tribe_log.bbox top ({top}) must be < bottom ({bottom})")
 
     _valid_engines = ("winrt", "tesseract", "easyocr", "paddleocr")
     if cfg.tribe_log.ocr_engine not in _valid_engines:

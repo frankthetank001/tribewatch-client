@@ -506,7 +506,9 @@ def _apply_resolution_preset(cfg: object) -> bool:
         cal_matches = bool(cal_res) and tuple(cal_res) == resolution
 
         # User has already calibrated for this exact resolution — keep their bboxes.
-        if cal_matches:
+        # But if the saved bbox is empty (e.g. truncated state), fall through
+        # so the preset gets applied.
+        if cal_matches and cfg.tribe_log.bbox:
             log.debug(
                 "Resolution %dx%d matches saved calibration — keeping user bboxes",
                 resolution[0], resolution[1],
