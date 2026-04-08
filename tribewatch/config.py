@@ -17,6 +17,10 @@ class TribeLogConfig:
     ocr_engine: str = "paddleocr"  # winrt / tesseract / easyocr / paddleocr
     upscale: int = 2
     tesseract_path: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    # While the screen is changing (active play), run a slow-cadence OCR
+    # peek every N seconds so we still notice the tribe log being opened
+    # without doing full OCR every cycle. 0 disables peeks during motion.
+    active_play_peek_interval: float = 8.0
 
 
 @dataclass

@@ -350,20 +350,42 @@ def _discover_tribe_name_win32(
                 save_config(cfg, config_path, mode=mode)
     else:
         if detected and not _tribe_names_match(saved, detected):
+            # Three-button choice: Keep Original / Rename / New Tribe.
+            # Win32 MessageBox can't relabel buttons, so we use
+            # YESNOCANCEL with explicit instructions in the body and a
+            # legend mapping each button to one of the three actions.
+            IDCANCEL = 2
             result = ctypes.windll.user32.MessageBoxW(
                 0,
                 (
                     f"Tribe name mismatch:\n\n"
                     f'Saved:      "{saved}"\n'
                     f'Detected:  "{detected}"\n\n'
-                    f"Update to the detected name?"
+                    f"Yes  = Rename saved tribe to detected name\n"
+                    f"No   = Treat detected as a NEW tribe\n"
+                    f"Cancel = Keep original (ignore detected)"
                 ),
                 title,
-                MB_YESNO | MB_ICONQUESTION | MB_TOPMOST,
+                MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST,
             )
             if result == IDYES:
+                # Rename: adopt detected name locally. Server-side rename
+                # cascade is available via POST /api/tribe/{id}/rename and
+                # should be triggered from the dashboard once connected;
+                # the local config change here keeps the client and the
+                # renamed server tribe in sync after that.
                 cfg.tribe.tribe_name = detected
                 save_config(cfg, config_path, mode=mode)
+            elif result == IDNO:
+                # New tribe: switch local config to the detected name.
+                # The server will report tribe_unknown on first connect
+                # (see ClientHandler._resolve_tribe_id) and the operator
+                # can finish creating it from the dashboard.
+                cfg.tribe.tribe_name = detected
+                save_config(cfg, config_path, mode=mode)
+            else:
+                # Cancel / dismissed: keep saved name unchanged.
+                pass
 
 
 def _win32_input_box(prompt: str, title: str) -> str:
@@ -438,8 +460,11 @@ def _discover_tribe_name_console(
         if detected and not _tribe_names_match(saved, detected):
             print(f'\nSaved tribe:  "{saved}"')
             print(f'Detected:     "{detected}"')
-            answer = input("Update tribe name? [y/N]: ").strip().lower()
-            if answer in ("y", "yes"):
+            print("  [r]ename — adopt detected name (sync with server via dashboard)")
+            print("  [n]ew    — treat detected as a new tribe")
+            print("  [k]eep   — keep saved name (default)")
+            answer = input("Choice [r/n/K]: ").strip().lower()
+            if answer in ("r", "rename", "n", "new"):
                 cfg.tribe.tribe_name = detected
                 save_config(cfg, config_path, mode=mode)
                 print(f'Tribe name updated: "{detected}"')
@@ -804,6 +829,127 @@ async def _handle_tribe_name_change(
         log.info("Tribe name change handled — monitoring resumed")
 
 
+async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
+    """Server reported the (tribe_name, server_id) is unknown for this user.
+
+    Show a Win32 dialog so the operator can pick whether to keep an
+    existing tribe, rename one to the newly-detected name, or create a
+    brand-new tribe — and then call the matching server REST API.
+    """
+    log = logging.getLogger(__name__)
+    detected = (msg.get("detected_name") or "").strip()
+    server_id = (msg.get("server_id") or "").strip()
+    candidates = msg.get("candidates") or []
+    if not detected or not server_id:
+        log.warning("tribe_unknown without detected_name/server_id, ignoring: %r", msg)
+        return
+
+    from tribewatch.config import client_config_path, save_config
+    from tribewatch import server_api
+
+    save_path = client_config_path(config_path)
+    save_mode = "client"
+    server_url = cfg.server.server_url
+    client_token = cfg.server.client_token
+    if not client_token:
+        log.warning("tribe_unknown but no client_token configured — cannot call server API")
+        return
+
+    import ctypes
+    MB_YESNOCANCEL = 0x03
+    MB_YESNO = 0x04
+    MB_ICONQUESTION = 0x20
+    MB_TOPMOST = 0x40000
+    IDYES = 6
+    IDNO = 7
+    IDCANCEL = 2
+    title = "TribeWatch \u2014 Tribe Setup"
+
+    loop = asyncio.get_event_loop()
+
+    if len(candidates) == 1:
+        cand = candidates[0]
+        cand_name = cand.get("tribe_name", "")
+        cand_id = int(cand.get("tribe_id") or 0)
+        body = (
+            f'Server doesn\'t recognise tribe "{detected}" on this ARK server.\n\n'
+            f'Your existing tribe here:\n'
+            f'    "{cand_name}"\n\n'
+            f'Yes  = Rename "{cand_name}" -> "{detected}"\n'
+            f'No   = Create "{detected}" as a new tribe\n'
+            f'Cancel = Keep using "{cand_name}" (ignore detected name)'
+        )
+        result = await loop.run_in_executor(
+            None, ctypes.windll.user32.MessageBoxW,
+            0, body, title, MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST,
+        )
+        try:
+            if result == IDYES and cand_id:
+                log.info("tribe_unknown: renaming tribe_id=%d %r -> %r",
+                         cand_id, cand_name, detected)
+                await server_api.rename_tribe(
+                    server_url, client_token,
+                    tribe_id=cand_id, new_name=detected,
+                )
+                cfg.tribe.tribe_name = detected
+                await loop.run_in_executor(
+                    None, lambda: save_config(cfg, save_path, mode=save_mode),
+                )
+            elif result == IDNO:
+                log.info("tribe_unknown: creating new tribe %r on %r", detected, server_id)
+                await server_api.claim_tribe(
+                    server_url, client_token, name=detected, server_id=server_id,
+                )
+                cfg.tribe.tribe_name = detected
+                await loop.run_in_executor(
+                    None, lambda: save_config(cfg, save_path, mode=save_mode),
+                )
+            else:
+                log.info("tribe_unknown: keeping existing tribe %r", cand_name)
+                cfg.tribe.tribe_name = cand_name
+                await loop.run_in_executor(
+                    None, lambda: save_config(cfg, save_path, mode=save_mode),
+                )
+        except Exception:
+            log.exception("tribe_unknown action failed")
+        return
+
+    if not candidates:
+        body = (
+            f'Server doesn\'t recognise tribe "{detected}" on this ARK server,\n'
+            f'and you don\'t have any other tribes here yet.\n\n'
+            f'Yes = Create "{detected}" as a new tribe\n'
+            f'No  = Cancel (do nothing)'
+        )
+        result = await loop.run_in_executor(
+            None, ctypes.windll.user32.MessageBoxW,
+            0, body, title, MB_YESNO | MB_ICONQUESTION | MB_TOPMOST,
+        )
+        if result == IDYES:
+            try:
+                log.info("tribe_unknown: claiming new tribe %r on %r", detected, server_id)
+                await server_api.claim_tribe(
+                    server_url, client_token, name=detected, server_id=server_id,
+                )
+                cfg.tribe.tribe_name = detected
+                await loop.run_in_executor(
+                    None, lambda: save_config(cfg, save_path, mode=save_mode),
+                )
+            except Exception:
+                log.exception("tribe_unknown claim failed")
+        else:
+            log.info("tribe_unknown: user cancelled new tribe creation")
+        return
+
+    # Multiple candidates — too ambiguous for a MessageBox; tell the
+    # operator to use the dashboard. Logged once per occurrence.
+    cand_str = ", ".join(c.get("tribe_name", "?") for c in candidates)
+    log.warning(
+        "tribe_unknown with %d candidates (%s) — please rename or create from the dashboard.",
+        len(candidates), cand_str,
+    )
+
+
 def _handle_reconnect(app: Any, auto: bool = False, use_browser: bool | None = None) -> None:
     """Start a reconnect sequence (if not already running)."""
     from tribewatch.reconnect import ReconnectSequence
@@ -1009,6 +1155,9 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
         # runs until app.stop() (either user shutdown or remote restart),
         # cleans up, then either breaks or loops to rebuild.
         while True:
+            async def _on_tribe_unknown(msg: dict) -> None:
+                await _handle_tribe_unknown(cfg, config_path, msg)
+
             relay = ServerRelay(
                 server_url=cfg.server.server_url,
                 auth_token=cfg.server.auth_token,
@@ -1017,6 +1166,7 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
                 on_control=_on_control,
                 on_config_update=_on_config_update,
                 on_auth_expired=_on_auth_expired,
+                on_tribe_unknown=_on_tribe_unknown,
             )
             app = TribeWatchApp(cfg, relay=relay)
             app._auto_reconnect_cb = lambda: _handle_reconnect(app, auto=True)

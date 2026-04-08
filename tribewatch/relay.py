@@ -31,6 +31,7 @@ class ServerRelay:
         on_control: Callable[[str, str], Any] | None = None,
         on_config_update: Callable[[str, dict, str], Any] | None = None,
         on_auth_expired: Callable[[], Any] | None = None,
+        on_tribe_unknown: Callable[[dict], Any] | None = None,
     ) -> None:
         self._server_url = self._normalize_url(server_url)
         self._auth_token = auth_token
@@ -39,6 +40,7 @@ class ServerRelay:
         self._reconnect_delay = reconnect_delay
         self._on_control = on_control  # (command, msg_id) -> ...
         self._on_config_update = on_config_update  # (section, data, msg_id) -> ...
+        self._on_tribe_unknown = on_tribe_unknown  # (msg) -> ...
 
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -229,6 +231,31 @@ class ServerRelay:
                     "msg_id": msg_id,
                     "ok": ok,
                 })
+
+        elif msg_type == "tribe_unknown":
+            # Server doesn't recognise (tribe_name, server_id) for this user.
+            # Surface so the operator can rename or create a new tribe via
+            # the dashboard. We don't auto-act here — that's an explicit
+            # user choice.
+            detected = data.get("detected_name", "")
+            server_id = data.get("server_id", "")
+            candidates = data.get("candidates", [])
+            cand_str = ", ".join(
+                f"{c.get('tribe_name','?')} (id={c.get('tribe_id','?')})"
+                for c in candidates
+            ) or "none"
+            log.warning(
+                "Server reported tribe unknown: detected=%r server_id=%r — "
+                "existing tribes for this account on this server: %s.",
+                detected, server_id, cand_str,
+            )
+            if self._on_tribe_unknown:
+                try:
+                    res = self._on_tribe_unknown(data)
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception:
+                    log.exception("on_tribe_unknown callback error")
 
         elif msg_type == "config_update":
             section = data.get("section", "")

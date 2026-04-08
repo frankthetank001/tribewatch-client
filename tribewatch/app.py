@@ -221,6 +221,8 @@ class TribeWatchApp:
         self._active_play: bool = False  # True when screen is changing (user playing)
         self._active_play_still_count: int = 0  # consecutive still frames before clearing active_play
         self._ACTIVE_PLAY_COOLDOWN: int = 5  # require 5 consecutive still frames (~10s) to exit active play
+        self._active_play_last_peek: float = 0.0  # monotonic time of last OCR peek during active play
+        self._heartbeat_kick: asyncio.Event | None = None  # set to short-circuit heartbeat sleep
         self._idle_recovery_attempted: bool = False  # prevents repeated recovery attempts
         self._overlay = None  # StatusOverlay (set by __main__ if enabled)
         self._auto_reconnect_cb = None  # callback set by __main__.py
@@ -848,16 +850,34 @@ class TribeWatchApp:
                 store.seed_high_water_from_eos(eos_day, "00:00:00")
 
     async def _relay_heartbeat_loop(self) -> None:
-        """Periodically send status to server via relay."""
+        """Periodically send status to server via relay.
+
+        Also short-circuits when ``self._heartbeat_kick`` is set so callers
+        can request an immediate heartbeat after a state transition (e.g.
+        active_play start/stop, tribe log gained/lost) instead of waiting
+        out the full interval.
+        """
         assert self._relay is not None
         interval = self.config.server.heartbeat_interval
+        if self._heartbeat_kick is None:
+            self._heartbeat_kick = asyncio.Event()
         while self._running:
-            await asyncio.sleep(interval)
+            try:
+                await asyncio.wait_for(self._heartbeat_kick.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+            self._heartbeat_kick.clear()
             try:
                 await self._refresh_eos_info()
                 await self._relay.send_status(self.build_status())
             except Exception:
                 log.debug("Relay heartbeat error", exc_info=True)
+
+    def _kick_heartbeat(self) -> None:
+        """Request an immediate status heartbeat (no-op if loop not running)."""
+        ev = self._heartbeat_kick
+        if ev is not None:
+            ev.set()
 
     async def _tribe_log_refresh_loop(self) -> None:
         """Periodically press Esc then L to close and reopen the tribe log.
@@ -1107,14 +1127,36 @@ class TribeWatchApp:
             # Mark tribe log as not visible — we're no longer monitoring it
             self._log_header_visible = False
             self._log_visible_since = None
+            self._active_play_last_peek = time.monotonic()
+            self._kick_heartbeat()
         elif not self._active_play and was_active:
             log.info("Screen still for %ds — resuming tribe log & parasaur OCR",
                      self._ACTIVE_PLAY_COOLDOWN * int(self.config.tribe_log.interval))
+            self._kick_heartbeat()
         # Update overlay with current status
         self._update_overlay()
 
         if self._active_play:
-            return
+            # Slow-cadence OCR peek during active play so we still notice the
+            # tribe log being opened mid-session, without doing full OCR every cycle.
+            peek_interval = float(getattr(self.config.tribe_log, "active_play_peek_interval", 0.0) or 0.0)
+            if peek_interval > 0 and (time.monotonic() - self._active_play_last_peek) >= peek_interval:
+                self._active_play_last_peek = time.monotonic()
+                try:
+                    peek_text = await recognize(
+                        img,
+                        engine=self.config.tribe_log.ocr_engine,
+                        upscale=self.config.tribe_log.upscale,
+                        tesseract_path=self.config.tribe_log.tesseract_path,
+                    )
+                    if peek_text and peek_text.lstrip().upper().startswith("LOG"):
+                        log.info("Tribe log detected during active play peek — resuming immediately")
+                        self._active_play = False
+                        self._active_play_still_count = 0
+                except Exception:
+                    log.debug("Active play peek OCR failed", exc_info=True)
+            if self._active_play:
+                return
 
         # Save last capture for debugging
         _debug_dir = Path("debug")
@@ -1157,6 +1199,7 @@ class TribeWatchApp:
         if log_header_visible and not was_visible:
             log.info("Tribe log detected — monitoring active")
             self._log_visible_since = time.time()
+            self._kick_heartbeat()
             # Tribe log reappeared — trigger an immediate tribe window capture
             # to refresh member online/offline status without waiting for the
             # normal tribe polling interval.
@@ -1169,6 +1212,7 @@ class TribeWatchApp:
         elif not log_header_visible and was_visible:
             log.info("Tribe log lost — header no longer visible")
             self._log_visible_since = None
+            self._kick_heartbeat()
 
         if log_header_visible:
             self._last_log_seen_at = time.time()
