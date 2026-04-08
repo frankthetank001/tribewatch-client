@@ -275,61 +275,27 @@ def _apply_env_overrides(cfg: object) -> None:
     # owner_discord_id lives in discord config (per-tribe).
 
 
-def _custom_button_dialog(
-    title: str, message: str, buttons: list[tuple[str, str]],
-    default: str = "",
-) -> str:
-    """Show a modal dialog with arbitrarily-labelled buttons.
+def _open_dashboard_for_tribe(server_url: str, tribe_name: str) -> None:
+    """Open the dashboard in a browser tab, hinting which tribe to land on.
 
-    *buttons* is a list of ``(button_text, return_value)`` tuples.
-    The dialog returns the value of the clicked button, or empty
-    string if the window was closed.
+    Used by the rename / new-tribe code paths so the user actually sees
+    something happen after picking an action — instead of the dialog
+    closing silently and leaving the dashboard on a stale tribe.
     """
-    import tkinter as tk
+    import webbrowser
+    from urllib.parse import quote
 
-    result = {"value": ""}
-    root = tk.Tk()
-    root.title(title)
-    root.attributes("-topmost", True)
-    root.resizable(False, False)
-    root.configure(padx=20, pady=20)
-
-    tk.Label(
-        root, text=message, justify="left", anchor="w", font=("Segoe UI", 10),
-    ).pack(fill="x")
-
-    btn_frame = tk.Frame(root)
-    btn_frame.pack(fill="x", pady=(16, 0))
-
-    def _make_cb(value: str):
-        def _cb() -> None:
-            result["value"] = value
-            root.destroy()
-        return _cb
-
-    default_btn = None
-    for text, value in buttons:
-        b = tk.Button(
-            btn_frame, text=text, command=_make_cb(value),
-            padx=12, pady=4,
+    if not tribe_name or not server_url:
+        return
+    base = server_url.rstrip("/")
+    if base.startswith(("ws://", "wss://")):
+        base = base.replace("wss://", "https://").replace("ws://", "http://")
+    try:
+        webbrowser.open(f"{base}/?tribe_hint={quote(tribe_name)}")
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "Failed to open dashboard for tribe hint", exc_info=True,
         )
-        b.pack(side="left", padx=4)
-        if value == default:
-            default_btn = b
-    if default_btn is not None:
-        default_btn.focus_set()
-        root.bind("<Return>", lambda _e: default_btn.invoke())
-
-    # Center on screen
-    root.update_idletasks()
-    w = root.winfo_width()
-    h = root.winfo_height()
-    sw = root.winfo_screenwidth()
-    sh = root.winfo_screenheight()
-    root.geometry(f"+{(sw - w) // 2}+{(sh - h) // 3}")
-
-    root.mainloop()
-    return result["value"]
 
 
 def _discover_and_confirm_tribe_name(
@@ -403,12 +369,15 @@ def _discover_tribe_name_win32(
                 save_config(cfg, config_path, mode=mode)
     else:
         if detected and not _tribe_names_match(saved, detected):
-            choice = _custom_button_dialog(
+            from tribewatch.overlay_ui import show_action_dialog
+            choice = show_action_dialog(
                 title,
                 (
-                    f"Tribe name mismatch:\n\n"
+                    f"Tribe name mismatch.\n\n"
                     f'Saved:      "{saved}"\n'
-                    f'Detected:  "{detected}"'
+                    f'Detected:  "{detected}"\n\n'
+                    f"Pick an action to take. The dashboard will open "
+                    f"so you can confirm the result."
                 ),
                 buttons=[
                     ("Rename saved tribe", "rename"),
@@ -418,18 +387,13 @@ def _discover_tribe_name_win32(
                 default="keep",
             )
             if choice == "rename":
-                # Adopt detected name locally. Server-side rename
-                # cascade is available via POST /api/tribe/{id}/rename
-                # and should be triggered from the dashboard once
-                # connected.
                 cfg.tribe.tribe_name = detected
                 save_config(cfg, config_path, mode=mode)
+                _open_dashboard_for_tribe(cfg.server.server_url, detected)
             elif choice == "new":
-                # Switch local config to the detected name. The server
-                # will report tribe_unknown on first connect and the
-                # operator can finish creating it from the dashboard.
                 cfg.tribe.tribe_name = detected
                 save_config(cfg, config_path, mode=mode)
+                _open_dashboard_for_tribe(cfg.server.server_url, detected)
             else:
                 # keep / closed: keep saved name unchanged.
                 pass
@@ -827,14 +791,18 @@ async def _handle_tribe_name_change(
     log.info("Tribe name change detected: %r -> %r — pausing monitoring", old_name, detected_name)
 
     try:
+        from tribewatch.overlay_ui import show_action_dialog
+
         choice = await asyncio.get_event_loop().run_in_executor(
             None,
-            _custom_button_dialog,
+            show_action_dialog,
             "TribeWatch \u2014 Tribe Name Changed",
             (
                 f"Tribe name changed!\n\n"
                 f'Previous:  "{old_name}"\n'
-                f'Detected:  "{detected_name}"'
+                f'Detected:  "{detected_name}"\n\n'
+                f"Pick an action — the dashboard will open so you can "
+                f"confirm the result."
             ),
             [
                 ("Rename existing tribe", "rename"),
@@ -845,32 +813,45 @@ async def _handle_tribe_name_change(
         )
 
         from tribewatch.config import client_config_path, save_config
+        from tribewatch import server_api
 
         save_path = client_config_path(config_path)
         save_mode = "client"
 
         if choice == "rename":
-            # Rename existing tribe in all stores
             log.info("User chose: rename tribe %r -> %r", old_name, detected_name)
+            # Local SQLite stores
             tribe_store = getattr(app, "_tribe_store", None)
             event_store = getattr(app, "_event_store", None)
             if tribe_store:
                 await tribe_store.rename_tribe(old_name, detected_name)
             if event_store:
                 await event_store.rename_tribe(old_name, detected_name)
+            # Server-side rename if we know the tribe id
+            tribe_id = getattr(app, "_tribe_id", None)
+            client_token = getattr(cfg.server, "client_token", "")
+            if tribe_id and client_token:
+                try:
+                    await server_api.rename_tribe(
+                        cfg.server.server_url, client_token,
+                        tribe_id=int(tribe_id), new_name=detected_name,
+                    )
+                except Exception:
+                    log.exception("Server-side rename failed; opening dashboard anyway")
             cfg.tribe.tribe_name = detected_name
             app.config.tribe.tribe_name = detected_name
             await asyncio.get_event_loop().run_in_executor(
                 None, lambda: save_config(cfg, save_path, mode=save_mode),
             )
+            _open_dashboard_for_tribe(cfg.server.server_url, detected_name)
         elif choice == "new":
-            # New tribe — just update the config, old data stays under old name
             log.info("User chose: new tribe %r (old data kept as %r)", detected_name, old_name)
             cfg.tribe.tribe_name = detected_name
             app.config.tribe.tribe_name = detected_name
             await asyncio.get_event_loop().run_in_executor(
                 None, lambda: save_config(cfg, save_path, mode=save_mode),
             )
+            _open_dashboard_for_tribe(cfg.server.server_url, detected_name)
         else:
             log.info("User chose: ignore tribe name change, keeping %r", old_name)
     except Exception:
@@ -911,6 +892,8 @@ async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
 
     loop = asyncio.get_event_loop()
 
+    from tribewatch.overlay_ui import show_action_dialog
+
     if len(candidates) == 1:
         cand = candidates[0]
         cand_name = cand.get("tribe_name", "")
@@ -918,11 +901,13 @@ async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
         body = (
             f'Server doesn\'t recognise tribe "{detected}" on this ARK server.\n\n'
             f'Your existing tribe here:\n'
-            f'    "{cand_name}"'
+            f'    "{cand_name}"\n\n'
+            f"Pick an action — the dashboard will open so you can "
+            f"confirm the result."
         )
         choice = await loop.run_in_executor(
             None,
-            _custom_button_dialog,
+            show_action_dialog,
             title,
             body,
             [
@@ -944,6 +929,7 @@ async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
                 await loop.run_in_executor(
                     None, lambda: save_config(cfg, save_path, mode=save_mode),
                 )
+                _open_dashboard_for_tribe(server_url, detected)
             elif choice == "new":
                 log.info("tribe_unknown: creating new tribe %r on %r", detected, server_id)
                 await server_api.claim_tribe(
@@ -953,6 +939,7 @@ async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
                 await loop.run_in_executor(
                     None, lambda: save_config(cfg, save_path, mode=save_mode),
                 )
+                _open_dashboard_for_tribe(server_url, detected)
             else:
                 log.info("tribe_unknown: keeping existing tribe %r", cand_name)
                 cfg.tribe.tribe_name = cand_name
@@ -970,7 +957,7 @@ async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
         )
         choice = await loop.run_in_executor(
             None,
-            _custom_button_dialog,
+            show_action_dialog,
             title,
             body,
             [
@@ -989,6 +976,7 @@ async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
                 await loop.run_in_executor(
                     None, lambda: save_config(cfg, save_path, mode=save_mode),
                 )
+                _open_dashboard_for_tribe(server_url, detected)
             except Exception:
                 log.exception("tribe_unknown claim failed")
         else:

@@ -48,6 +48,7 @@ a = Analysis(
         'tribewatch.eos',
         'tribewatch.updater',
         'tribewatch.reconnect',
+        'tribewatch.overlay_ui',
         'pyautogui',
         'rapidocr_onnxruntime',
         'ch_ppocr_v2_cls',
