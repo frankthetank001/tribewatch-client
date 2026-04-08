@@ -144,7 +144,7 @@ def show_action_dialog(
     sw = top.winfo_screenwidth()
     sh = top.winfo_screenheight()
     x = (sw - w) // 2
-    y = (sh - h) // 3
+    y = (sh - h) // 2
     top.geometry(f"{w}x{h}+{x}+{y}")
 
     # Bring the card above the (semi-transparent) backdrop
