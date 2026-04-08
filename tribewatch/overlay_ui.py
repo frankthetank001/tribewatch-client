@@ -73,6 +73,14 @@ def show_action_dialog(
         pass
     top.configure(bg="#1a1a1a")
 
+    # Initial geometry — will be refined after widgets are packed.
+    # Without this, overrideredirect Toplevels on Windows can flash in
+    # at (0,0) before the post-pack geometry call lands.
+    sw0 = top.winfo_screenwidth()
+    sh0 = top.winfo_screenheight()
+    init_w, init_h = 650, 300
+    top.geometry(f"{init_w}x{init_h}+{(sw0 - init_w) // 2}+{(sh0 - init_h) // 2}")
+
     # Gold border via nested frames
     border = tk.Frame(top, bg="#FFD700", padx=3, pady=3)
     border.pack(fill=tk.BOTH, expand=True)
@@ -137,15 +145,23 @@ def show_action_dialog(
         default_btn.focus_set()
         top.bind("<Return>", lambda _e, b=default_btn: b.invoke())
 
-    # --- Center the card on screen ---
+    # --- Center the card on screen (mirrors calibrate._show_overlay_prompt) ---
     top.update_idletasks()
-    w = top.winfo_reqwidth()
-    h = top.winfo_reqheight()
+    actual_w = top.winfo_reqwidth()
+    actual_h = top.winfo_reqheight()
+    if actual_w < init_w:
+        actual_w = init_w
     sw = top.winfo_screenwidth()
     sh = top.winfo_screenheight()
-    x = (sw - w) // 2
-    y = (sh - h) // 2
-    top.geometry(f"{w}x{h}+{x}+{y}")
+    x = (sw - actual_w) // 2
+    y = (sh - actual_h) // 2
+    top.geometry(f"{actual_w}x{actual_h}+{x}+{y}")
+
+    # Drop topmost from the backdrop so the card sits above it at OS level
+    try:
+        root.attributes("-topmost", False)
+    except Exception:
+        pass
 
     # Bring the card above the (semi-transparent) backdrop
     top.lift()
