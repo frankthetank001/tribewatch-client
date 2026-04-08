@@ -487,11 +487,22 @@ def _apply_resolution_preset(cfg: object) -> bool:
         from tribewatch.server_id import get_game_resolution
 
         resolution = get_game_resolution()
-        if resolution is None:
-            log.debug("Could not detect game resolution — skipping preset auto-apply")
-            return True
-
         cal_res = getattr(cfg.general, "calibration_resolution", None)
+
+        if resolution is None:
+            # No detected game resolution. If the user already has a
+            # saved calibration, trust it. Otherwise this is a fresh /
+            # post-reset state and the dataclass default bbox is
+            # garbage — force the setup wizard.
+            if cal_res:
+                log.debug("Could not detect game resolution — keeping saved calibration")
+                return True
+            log.warning(
+                "Could not detect game resolution and no saved calibration — "
+                "forcing setup wizard",
+            )
+            return False
+
         cal_matches = bool(cal_res) and tuple(cal_res) == resolution
 
         # User has already calibrated for this exact resolution — keep their bboxes.
