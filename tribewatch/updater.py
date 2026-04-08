@@ -63,11 +63,19 @@ async def _check_dev_update() -> dict | None:
         if not remote_version or remote_version == __version__:
             return None
 
-        # Find the installer asset
+        # Find the installer asset. Prefer the API endpoint URL over
+        # browser_download_url — the latter routes through GitHub's
+        # filename-based redirect which can return 404 even when the
+        # asset is healthy (we hit this on dev-latest after multiple
+        # re-uploads). The API URL with Accept: application/octet-stream
+        # is the GitHub-recommended download path and bypasses the
+        # broken redirect.
         download_url = None
+        is_installer = False
         for asset in data.get("assets", []):
             if asset["name"] == ASSET_NAME_DEV:
-                download_url = asset["browser_download_url"]
+                download_url = asset.get("url") or asset.get("browser_download_url")
+                is_installer = True
                 break
 
         if not download_url:
@@ -79,7 +87,7 @@ async def _check_dev_update() -> dict | None:
             "download_url": download_url,
             "release_url": data.get("html_url", ""),
             "body": data.get("body", ""),
-            "is_installer": download_url.endswith(".exe"),
+            "is_installer": is_installer,
         }
     except Exception:
         log.debug("Dev update check failed", exc_info=True)
@@ -106,11 +114,13 @@ async def _check_stable_update() -> dict | None:
         if not remote_ver or remote_ver <= local_ver:
             return None
 
-        # Find the installer asset
+        # Find the installer asset (use API URL — see _check_dev_update)
         download_url = None
+        is_installer = False
         for asset in data.get("assets", []):
             if asset["name"] == ASSET_NAME_STABLE:
-                download_url = asset["browser_download_url"]
+                download_url = asset.get("url") or asset.get("browser_download_url")
+                is_installer = True
                 break
 
         if not download_url:
@@ -122,7 +132,7 @@ async def _check_stable_update() -> dict | None:
             "download_url": download_url,
             "release_url": data.get("html_url", ""),
             "body": data.get("body", ""),
-            "is_installer": download_url.endswith(".exe"),
+            "is_installer": is_installer,
         }
     except Exception:
         log.debug("Update check failed", exc_info=True)
@@ -149,10 +159,17 @@ async def download_and_run_installer(download_url: str) -> bool:
         asset_name = ASSET_NAME_DEV if _is_dev_version() else ASSET_NAME_STABLE
         installer_path = os.path.join(tmp_dir, asset_name)
 
+        # GitHub release-asset API endpoint requires
+        # Accept: application/octet-stream to return the binary;
+        # otherwise it returns the asset metadata JSON. The
+        # browser_download_url accepts anything but is unreliable.
+        headers = {"Accept": "application/octet-stream"}
+
         log.info("Downloading update from %s", download_url)
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 download_url,
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=300),
             ) as resp:
                 resp.raise_for_status()
