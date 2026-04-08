@@ -915,10 +915,10 @@ class TribeWatchApp:
                 return False
 
         try:
-            log.info("Tribe log refresh: pressing Esc to close tribe log (manual=%s)", manual)
+            log.info("Tribe log refresh: pressing Esc (manual=%s)", manual)
             send_key(window_title, "escape")
-
             await asyncio.sleep(check_wait)
+
             if self._log_header_visible:
                 log.warning(
                     "Tribe log refresh: tribe log still visible after Esc — triggering auto-reconnect"
@@ -926,24 +926,42 @@ class TribeWatchApp:
                 self._maybe_auto_reconnect()
                 return False
 
+            # Esc may have opened the pause menu (either because the log
+            # wasn't open and Esc went to the menu, or because the menu
+            # was already up). Either way, dismiss it before pressing L.
             if await self._is_esc_menu_open():
-                log.info("Tribe log refresh: pause menu detected after Esc, dismissing")
+                log.info("Tribe log refresh: pause menu detected, dismissing")
                 send_key(window_title, "escape")
                 await asyncio.sleep(check_wait)
 
-            log.info("Tribe log refresh: pressing L to reopen tribe log")
-            send_key(window_title, "l")
-
-            await asyncio.sleep(check_wait)
-            if not self._log_header_visible:
-                log.warning(
-                    "Tribe log refresh: tribe log NOT visible after pressing L — triggering auto-reconnect"
+            # Try L a few times before giving up — a single missed
+            # keystroke shouldn't immediately escalate to auto-reconnect.
+            _L_ATTEMPTS = 3
+            for attempt in range(1, _L_ATTEMPTS + 1):
+                log.info(
+                    "Tribe log refresh: pressing L to reopen tribe log (attempt %d/%d)",
+                    attempt, _L_ATTEMPTS,
                 )
-                self._maybe_auto_reconnect()
-                return False
+                send_key(window_title, "l")
+                await asyncio.sleep(check_wait)
+                if self._log_header_visible:
+                    log.info("Tribe log refresh: tribe log reopened successfully")
+                    return True
+                # If a stray Esc menu appeared between attempts, dismiss
+                # it before retrying or L will land in the menu again.
+                if await self._is_esc_menu_open():
+                    log.info(
+                        "Tribe log refresh: pause menu detected between L attempts, dismissing"
+                    )
+                    send_key(window_title, "escape")
+                    await asyncio.sleep(check_wait)
 
-            log.info("Tribe log refresh: tribe log reopened successfully")
-            return True
+            log.warning(
+                "Tribe log refresh: tribe log NOT visible after %d L attempts — triggering auto-reconnect",
+                _L_ATTEMPTS,
+            )
+            self._maybe_auto_reconnect()
+            return False
         except Exception:
             log.debug("Tribe log refresh failed", exc_info=True)
             return False

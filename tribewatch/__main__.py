@@ -1058,8 +1058,6 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             _handle_reconnect(app, use_browser=True)
         elif command == "reconnect_cancel":
             asyncio.create_task(_handle_reconnect_cancel(app))
-        elif command == "refresh_log":
-            asyncio.create_task(app.refresh_tribe_log(manual=True))
         elif command == "restart":
             # In-process soft restart — flag the run loop and stop the
             # current app. The wrapping `while _restart_requested[...]`
