@@ -2,7 +2,23 @@
 """PyInstaller spec for TribeWatch client (no server/standalone)."""
 
 import os, importlib, re
+from PyInstaller.utils.hooks import collect_submodules
 block_cipher = None
+
+# psutil — collect every submodule so the bundle has the .py wrappers
+# alongside the _psutil_windows.pyd C extension. Without this, the
+# top-level `import psutil` in the bundled exe fails because the
+# package's __init__.py is missing, the singleton's process scan
+# silently returns [], and multiple instances coexist.
+_psutil_submodules = collect_submodules('psutil')
+
+# Dev builds use a different exe name + collect dir so they can coexist
+# with the stable install on the same machine without the singleton
+# enforcement killing each other. Set TRIBEWATCH_BUILD_DEV=1 in the
+# build env (build.py does this when --iss installer-dev.iss is passed)
+# and the produced bundle will be `dist/TribeWatch-Dev/TribeWatch-Dev.exe`.
+_is_dev_build = os.environ.get('TRIBEWATCH_BUILD_DEV', '').lower() in ('1', 'true', 'yes')
+_exe_name = 'TribeWatch-Dev' if _is_dev_build else 'TribeWatch'
 
 # Read version from tribewatch/__init__.py (single source of truth)
 _version_match = re.search(
@@ -32,11 +48,19 @@ a = Analysis(
         'tribewatch.eos',
         'tribewatch.updater',
         'tribewatch.reconnect',
+        'tribewatch.overlay_ui',
         'pyautogui',
         'rapidocr_onnxruntime',
         'ch_ppocr_v2_cls',
         'ch_ppocr_v3_det',
         'ch_ppocr_v3_rec',
+        # psutil submodules — used by tribewatch.singleton's process
+        # scan. The previous `'psutil'` hint only added the top-level
+        # name; PyInstaller bundled _psutil_windows.pyd but none of
+        # the .py wrappers (__init__, _common, _pswindows, etc), so
+        # `import psutil` failed at runtime and the scan silently
+        # returned []. collect_submodules() walks the whole package.
+        *_psutil_submodules,
     ],
     hookspath=[],
     hooksconfig={},
@@ -68,7 +92,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='TribeWatch',
+    name=_exe_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -86,5 +110,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='TribeWatch',
+    name=_exe_name,
 )

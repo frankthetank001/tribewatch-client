@@ -45,7 +45,9 @@ jobs:
 
       - name: Create ZIP archive of portable build
         shell: pwsh
-        run: Compress-Archive -Path dist\TribeWatch\* -DestinationPath dist\TribeWatch-${{ steps.version.outputs.version }}-portable.zip
+        # Dev builds now produce dist\TribeWatch-Dev\ (different exe name
+        # so dev + stable installs can coexist on the same machine).
+        run: Compress-Archive -Path dist\TribeWatch-Dev\* -DestinationPath dist\TribeWatch-${{ steps.version.outputs.version }}-portable.zip
 
       - name: Create or update dev pre-release
         uses: softprops/action-gh-release@v2

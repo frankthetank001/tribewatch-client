@@ -109,6 +109,15 @@ def main() -> None:
         print(get_version())
         return
 
+    # Dev builds (selected via --iss installer-dev.iss) should produce a
+    # differently-named exe (TribeWatch-Dev.exe in dist/TribeWatch-Dev/)
+    # so dev + stable installs can coexist on the same machine without
+    # the singleton enforcement killing each other. tribewatch.spec
+    # reads this env var.
+    if "installer-dev" in args.iss:
+        os.environ["TRIBEWATCH_BUILD_DEV"] = "1"
+        print("Dev build mode: producing TribeWatch-Dev.exe")
+
     if not build_exe():
         sys.exit(1)
 

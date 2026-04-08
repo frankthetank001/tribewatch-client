@@ -68,6 +68,7 @@ async def obtain_client_token_interactive(
     *,
     local_port: int = _DEFAULT_LOCAL_PORT,
     timeout: float = 120.0,
+    tribe_hint: str = "",
 ) -> str:
     """Open browser for OAuth, capture token automatically via localhost redirect.
 
@@ -99,6 +100,9 @@ async def obtain_client_token_interactive(
     server_thread.start()
 
     login_url = f"{url}/api/v1/auth/client-login?port={local_port}"
+    if tribe_hint:
+        from urllib.parse import quote
+        login_url += f"&tribe_hint={quote(tribe_hint)}"
     log.info("Opening browser for Discord OAuth: %s", login_url)
     webbrowser.open(login_url)
 

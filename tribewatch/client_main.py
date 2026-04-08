@@ -25,6 +25,8 @@ def main() -> None:
         _cmd_calibrate_parasaur,
         _cmd_calibrate_tribe,
         _cmd_generate_config,
+        _cmd_reset_all,
+        _cmd_reset_calibration,
         _cmd_run_client,
         _cmd_setup,
         _cmd_test_discord,
@@ -35,6 +37,7 @@ def main() -> None:
         _setup_logging,
     )
     from tribewatch.config import client_config_path, load_config
+    from tribewatch.singleton import ensure_single_instance
     from tribewatch.updater import is_frozen
 
     _set_dpi_awareness()
@@ -79,6 +82,16 @@ def main() -> None:
         help="Calibrate tribe window capture region",
     )
     parser.add_argument(
+        "--reset-calibration",
+        action="store_true",
+        help="Reset screen regions to resolution defaults (discards manual calibration)",
+    )
+    parser.add_argument(
+        "--reset-all",
+        action="store_true",
+        help="Full reset: deletes client config, calibration, dedup state, and local caches",
+    )
+    parser.add_argument(
         "--test-ocr",
         action="store_true",
         help="Capture once, run OCR, print results, exit",
@@ -97,26 +110,6 @@ def main() -> None:
     args = parser.parse_args()
     config_path: Path = args.config
 
-    if args.setup:
-        _cmd_setup(config_path)
-        return
-
-    if args.calibrate:
-        _cmd_calibrate(config_path)
-        return
-
-    if args.calibrate_manual:
-        _cmd_calibrate_manual(config_path)
-        return
-
-    if args.calibrate_parasaur:
-        _cmd_calibrate_parasaur(config_path)
-        return
-
-    if args.calibrate_tribe:
-        _cmd_calibrate_tribe(config_path)
-        return
-
     # Client mode always uses the client config file
     effective_path = client_config_path(config_path)
     if not effective_path.exists():
@@ -124,7 +117,54 @@ def main() -> None:
 
     cfg = load_config(effective_path)
     _apply_env_overrides(cfg)
+    # Logging must be configured BEFORE the singleton scan so its
+    # warnings (process scan results, kill failures, etc) actually
+    # land in tribewatch.log.
     _setup_logging(cfg.general.log_level)
+
+    # Kill any other TribeWatch instance still running BEFORE running
+    # any wizard / calibration GUI. Otherwise the post-install launch
+    # and a Start Menu "Setup" shortcut will coexist for the duration
+    # of the wizard, leaving the user staring at two windows.
+    ensure_single_instance()
+
+    if args.reset_calibration:
+        _cmd_reset_calibration(effective_path)
+        return
+
+    if args.reset_all:
+        _cmd_reset_all(effective_path)
+        return
+
+    if args.setup:
+        # _cmd_setup returns None on success / False on user cancel.
+        # Mirror __main__.main() behaviour: fall through after a
+        # successful setup so the client launches automatically.
+        # Without this, the Start Menu "Setup" shortcut completes
+        # calibration and silently exits, leaving the user staring
+        # at nothing.
+        result = _cmd_setup(effective_path)
+        if result is False:
+            return
+        # Reload config so the wizard's writes are picked up
+        cfg = load_config(effective_path)
+        _apply_env_overrides(cfg)
+
+    if args.calibrate:
+        _cmd_calibrate(effective_path)
+        return
+
+    if args.calibrate_manual:
+        _cmd_calibrate_manual(effective_path)
+        return
+
+    if args.calibrate_parasaur:
+        _cmd_calibrate_parasaur(effective_path)
+        return
+
+    if args.calibrate_tribe:
+        _cmd_calibrate_tribe(effective_path)
+        return
 
     # Prompt for server URL if not set (first launch)
     if not cfg.server.server_url:
@@ -143,7 +183,36 @@ def main() -> None:
     if is_frozen():
         _check_for_updates()
 
-    _apply_resolution_preset(cfg)
+    verified = _apply_resolution_preset(cfg)
+    if not verified and not args.setup:
+        # Same forced-setup gate as __main__._cmd_run: derived presets
+        # for unverified resolutions are naive scaled-from-1080p guesses
+        # and are usually way off for non-16:9 aspect ratios. Force the
+        # user through the calibration wizard before running.
+        try:
+            from tribewatch.server_id import get_game_resolution
+            res = get_game_resolution()
+        except Exception:
+            res = None
+        res_str = f"{res[0]}x{res[1]}" if res else "your current"
+        print()
+        print("=" * 70)
+        print(f"  Unverified resolution: {res_str}")
+        print("=" * 70)
+        print(
+            "  TribeWatch derived capture regions for this resolution from the\n"
+            "  1920x1080 baseline, but it has not been hand-verified. The setup\n"
+            "  wizard will now open so you can confirm or adjust the regions."
+        )
+        print("=" * 70)
+        print()
+        try:
+            _cmd_setup(effective_path)
+            cfg = load_config(effective_path)
+            _apply_env_overrides(cfg)
+        except Exception:
+            import logging as _logging
+            _logging.getLogger(__name__).exception("Forced setup wizard failed")
 
     # Tribe name discovery
     if cfg.tribe.bbox:

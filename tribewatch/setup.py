@@ -201,11 +201,26 @@ def cmd_setup(config_path: Path) -> None:
 
         current_res = get_game_resolution()
         cal_res = data.get("general", {}).get("calibration_resolution")
-        if current_res and cal_res and tuple(cal_res) != current_res:
-            print(
-                f"Resolution changed: calibrated at {cal_res[0]}x{cal_res[1]}, "
-                f"game is now at {current_res[0]}x{current_res[1]}"
-            )
+        # Apply a preset as the starting bboxes when:
+        #   - we have no saved calibration at all (fresh / post-reset), OR
+        #   - the saved calibration is for a different resolution than the
+        #     game is currently at.
+        # Otherwise the wizard would show the dataclass default
+        # [0, 0, 800, 600] as the "existing" bbox, which is useless.
+        needs_preset = bool(current_res) and (
+            not cal_res or tuple(cal_res) != current_res
+        )
+        if needs_preset:
+            if cal_res:
+                print(
+                    f"Resolution changed: calibrated at {cal_res[0]}x{cal_res[1]}, "
+                    f"game is now at {current_res[0]}x{current_res[1]}"
+                )
+            else:
+                print(
+                    f"No saved calibration. Game is at "
+                    f"{current_res[0]}x{current_res[1]}."
+                )
             preset = get_preset(current_res)
             if preset:
                 print("Using preset for current resolution as starting bboxes.")

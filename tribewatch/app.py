@@ -221,6 +221,8 @@ class TribeWatchApp:
         self._active_play: bool = False  # True when screen is changing (user playing)
         self._active_play_still_count: int = 0  # consecutive still frames before clearing active_play
         self._ACTIVE_PLAY_COOLDOWN: int = 5  # require 5 consecutive still frames (~10s) to exit active play
+        self._active_play_last_peek: float = 0.0  # monotonic time of last OCR peek during active play
+        self._heartbeat_kick: asyncio.Event | None = None  # set to short-circuit heartbeat sleep
         self._idle_recovery_attempted: bool = False  # prevents repeated recovery attempts
         self._overlay = None  # StatusOverlay (set by __main__ if enabled)
         self._auto_reconnect_cb = None  # callback set by __main__.py
@@ -260,6 +262,68 @@ class TribeWatchApp:
             return
         if self._auto_reconnect_cb:
             self._auto_reconnect_cb()
+
+    async def _is_esc_menu_open(self) -> bool:
+        """Return True if ARK's in-game pause menu is currently visible.
+
+        Captures a centred region of the ARK window and runs OCR looking
+        for the unmistakable button labels — RESUME, SETTINGS, EXIT TO
+        MAIN MENU. Used by the tribe-log refresh and idle recovery loops
+        to detect the case where Esc opened the pause menu instead of
+        just closing the tribe log: pressing L while the menu is up
+        does nothing useful, and the recovery would otherwise escalate
+        to a false-positive auto-reconnect.
+
+        Returns False on any failure (no window, no OCR engine, no
+        match) — the caller can safely treat False as "menu not detected".
+        """
+        try:
+            import ctypes
+            from tribewatch.capture import _IS_WIN32, _grab_window
+            from tribewatch.ocr_engine import recognize
+
+            if not _IS_WIN32:
+                return False
+            hwnd = getattr(self.capture, "_hwnd", None)
+            if not hwnd:
+                return False
+
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            rect = (ctypes.c_long * 4)()
+            user32.GetClientRect(hwnd, ctypes.byref(rect))
+            width = rect[2]
+            height = rect[3]
+            if width <= 0 or height <= 0:
+                return False
+
+            # Centred bbox covering ~40% width × ~60% height — wide enough
+            # to catch the button stack at any common resolution, narrow
+            # enough to skip the surrounding game world clutter.
+            bw = int(width * 0.40)
+            bh = int(height * 0.60)
+            x0 = (width - bw) // 2
+            y0 = (height - bh) // 2
+            bbox = [x0, y0, x0 + bw, y0 + bh]
+
+            img = _grab_window(hwnd, bbox)
+            if img is None:
+                return False
+
+            engine = getattr(self.config.tribe_log, "ocr_engine", "winrt") or "winrt"
+            text = await recognize(img, engine=engine, retries=0, preprocess=False)
+            if not text:
+                return False
+            upper = text.upper()
+            # Any one of these keywords is enough — RESUME is the most
+            # reliable, but check a few in case OCR mangles one.
+            for needle in ("RESUME", "EXIT TO MAIN", "SETTINGS"):
+                if needle in upper:
+                    log.debug("Esc menu detected via OCR keyword %r", needle)
+                    return True
+            return False
+        except Exception:
+            log.debug("Esc menu OCR check failed", exc_info=True)
+            return False
 
     def _save_auto_reconnect_debug_screenshot(self) -> None:
         """Capture the current ARK window and save it under ``debug/``.
@@ -552,6 +616,14 @@ class TribeWatchApp:
             "events_today_count": self._events_today_count,
             "total_events": self._total_events_count,
             "idle_alert_minutes": self.config.alerts.idle_alert_minutes,
+            "tribe_log_tunables": {
+                "active_play_threshold": getattr(
+                    self.config.tribe_log, "active_play_threshold", 2.0,
+                ),
+                "active_play_peek_interval": getattr(
+                    self.config.tribe_log, "active_play_peek_interval", 8.0,
+                ),
+            },
         }
 
         if self._running:
@@ -786,81 +858,158 @@ class TribeWatchApp:
                 store.seed_high_water_from_eos(eos_day, "00:00:00")
 
     async def _relay_heartbeat_loop(self) -> None:
-        """Periodically send status to server via relay."""
+        """Periodically send status to server via relay.
+
+        Also short-circuits when ``self._heartbeat_kick`` is set so callers
+        can request an immediate heartbeat after a state transition (e.g.
+        active_play start/stop, tribe log gained/lost) instead of waiting
+        out the full interval.
+        """
         assert self._relay is not None
         interval = self.config.server.heartbeat_interval
+        if self._heartbeat_kick is None:
+            self._heartbeat_kick = asyncio.Event()
         while self._running:
-            await asyncio.sleep(interval)
+            try:
+                await asyncio.wait_for(self._heartbeat_kick.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+            self._heartbeat_kick.clear()
             try:
                 await self._refresh_eos_info()
                 await self._relay.send_status(self.build_status())
             except Exception:
                 log.debug("Relay heartbeat error", exc_info=True)
 
+    def _kick_heartbeat(self) -> None:
+        """Request an immediate status heartbeat (no-op if loop not running)."""
+        ev = self._heartbeat_kick
+        if ev is not None:
+            ev.set()
+
+    async def refresh_tribe_log(self, *, manual: bool = False) -> bool:
+        """Press Esc then L to close and reopen the tribe log.
+
+        Verifies the tribe log actually closed (after Esc) and reopened
+        (after L). Returns True on success, False if anything along the
+        way looked wrong (in which case auto-reconnect may be triggered).
+
+        ``manual=True`` relaxes the safety gates so a server-side
+        ``refresh_log`` control command can force a refresh even when
+        the tribe log isn't currently visible or the user is mid-play.
+        The periodic loop and idle-monitor still pass ``manual=False``.
+        """
+        from tribewatch.capture import focus_window, is_window_foreground, send_key
+
+        check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
+        log.info(
+            "Tribe log refresh: ENTER (manual=%s, paused=%s, log_visible=%s, active_play=%s, check_wait=%s)",
+            manual, self._paused, self._log_header_visible, self._active_play, check_wait,
+        )
+
+        if not manual:
+            if self._paused or not self._log_header_visible:
+                log.info(
+                    "Tribe log refresh: gated out (paused=%s, log_visible=%s)",
+                    self._paused, self._log_header_visible,
+                )
+                return False
+            if self._active_play:
+                log.info("Tribe log refresh: gated out (active_play)")
+                return False
+
+        window_title = self.config.general.window_title
+        if not window_title:
+            log.info("Tribe log refresh: no window_title configured, skipping")
+            return False
+
+        if not is_window_foreground(window_title):
+            # Best-effort focus. SetForegroundWindow returns False against
+            # fullscreen-exclusive ARK, but PostMessage still delivers
+            # key events to the hwnd, so don't bail out on a False here —
+            # the reconnect sequence relies on the same trick.
+            focused = focus_window(window_title)
+            log.info(
+                "Tribe log refresh: focus_window returned %s (proceeding either way)",
+                focused,
+            )
+            await asyncio.sleep(0.5)
+        else:
+            log.info("Tribe log refresh: ARK already foreground")
+
+        try:
+            log.info("Tribe log refresh: pressing Esc (manual=%s)", manual)
+            sent = send_key(window_title, "escape")
+            log.info("Tribe log refresh: Esc send_key returned %s; waiting %ss", sent, check_wait)
+            await asyncio.sleep(check_wait)
+            log.info(
+                "Tribe log refresh: post-Esc state log_visible=%s",
+                self._log_header_visible,
+            )
+
+            if self._log_header_visible:
+                log.warning(
+                    "Tribe log refresh: tribe log still visible after Esc — triggering auto-reconnect"
+                )
+                self._maybe_auto_reconnect()
+                return False
+
+            # Esc may have opened the pause menu (either because the log
+            # wasn't open and Esc went to the menu, or because the menu
+            # was already up). Either way, dismiss it before pressing L.
+            if await self._is_esc_menu_open():
+                log.info("Tribe log refresh: pause menu detected, dismissing")
+                send_key(window_title, "escape")
+                await asyncio.sleep(check_wait)
+
+            # Try L a few times before giving up — a single missed
+            # keystroke shouldn't immediately escalate to auto-reconnect.
+            _L_ATTEMPTS = 3
+            for attempt in range(1, _L_ATTEMPTS + 1):
+                log.info(
+                    "Tribe log refresh: pressing L to reopen tribe log (attempt %d/%d)",
+                    attempt, _L_ATTEMPTS,
+                )
+                send_key(window_title, "l")
+                await asyncio.sleep(check_wait)
+                if self._log_header_visible:
+                    log.info("Tribe log refresh: tribe log reopened successfully")
+                    return True
+                # If a stray Esc menu appeared between attempts, dismiss
+                # it before retrying or L will land in the menu again.
+                if await self._is_esc_menu_open():
+                    log.info(
+                        "Tribe log refresh: pause menu detected between L attempts, dismissing"
+                    )
+                    send_key(window_title, "escape")
+                    await asyncio.sleep(check_wait)
+
+            log.warning(
+                "Tribe log refresh: tribe log NOT visible after %d L attempts — triggering auto-reconnect",
+                _L_ATTEMPTS,
+            )
+            self._maybe_auto_reconnect()
+            return False
+        except Exception:
+            log.debug("Tribe log refresh failed", exc_info=True)
+            return False
+
     async def _tribe_log_refresh_loop(self) -> None:
-        """Periodically press Esc then L to close and reopen the tribe log.
+        """Periodically force a tribe-log refresh while idle.
 
-        Also serves as a heartbeat: verifies the tribe log actually closed
-        (after Esc) and reopened (after L). If either check fails, the game
-        is likely frozen.
-
-        Only runs while monitoring is active (not paused, tribe log visible)
-        AND the screen is static (user is AFK). Skips if the user is actively
-        playing to avoid disrupting gameplay.
-        Waits a random 20–25 minutes between refreshes.
+        Waits 20–25 minutes between attempts and only fires when the log
+        is visible, the user isn't actively playing, and the client isn't
+        paused. Delegates the actual key sequence + verification to
+        :meth:`refresh_tribe_log`.
         """
         import random
-        from tribewatch.capture import send_key
-
-        # How long to wait for the capture cycle to update _log_header_visible
-        check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
 
         while self._running:
             delay = random.uniform(20 * 60, 25 * 60)
             await asyncio.sleep(delay)
-
             if not self._running:
                 break
-            if self._paused or not self._log_header_visible:
-                continue
-
-            # Skip if user is actively playing (with hysteresis)
-            if self._active_play:
-                log.debug("Tribe log refresh: skipped — active play detected")
-                continue
-
-            window_title = self.config.general.window_title
-            if not window_title:
-                continue
-
-            try:
-                log.info("Tribe log refresh: pressing Esc to close tribe log")
-                send_key(window_title, "escape")
-
-                # Wait for capture cycle to detect the tribe log closed
-                await asyncio.sleep(check_wait)
-                if self._log_header_visible:
-                    # Esc didn't close the log — game is likely frozen.
-                    log.warning(
-                        "Tribe log refresh: tribe log still visible after Esc — triggering auto-reconnect"
-                    )
-                    self._maybe_auto_reconnect()
-                    continue
-
-                log.info("Tribe log refresh: pressing L to reopen tribe log")
-                send_key(window_title, "l")
-
-                # Wait for capture cycle to detect the tribe log reopened
-                await asyncio.sleep(check_wait)
-                if not self._log_header_visible:
-                    log.warning(
-                        "Tribe log refresh: tribe log NOT visible after pressing L — triggering auto-reconnect"
-                    )
-                    self._maybe_auto_reconnect()
-                else:
-                    log.info("Tribe log refresh: tribe log reopened successfully")
-            except Exception:
-                log.debug("Tribe log refresh failed", exc_info=True)
+            await self.refresh_tribe_log(manual=False)
 
     async def _idle_screen_monitor(self) -> None:
         """Detect idle screen and attempt to reopen tribe log / auto-reconnect.
@@ -910,14 +1059,33 @@ class TribeWatchApp:
                 continue
 
             self._idle_recovery_attempted = True
+
+            window_title = self.config.general.window_title
+            from tribewatch.capture import focus_window, is_window_foreground, send_key
+
+            # Best-effort focus before sending keys. The user is AFK by
+            # definition here (10 min of static screen). Don't bail on a
+            # False return — fullscreen-exclusive ARK makes
+            # SetForegroundWindow report failure even though PostMessage
+            # still reaches the hwnd.
+            if not is_window_foreground(window_title):
+                focused = focus_window(window_title)
+                log.info("Idle recovery: focus_window returned %s (proceeding)", focused)
+                await asyncio.sleep(0.5)
+
             log.warning(
                 "Screen idle for %ds with tribe log closed — pressing L to reopen",
                 int(idle_duration),
             )
 
+            # If the in-game pause menu is open, dismiss it first.
+            if await self._is_esc_menu_open():
+                log.info("Idle recovery: pause menu detected, dismissing before L")
+                send_key(window_title, "escape")
+                await asyncio.sleep(2)
+
             # Press L to try reopening the tribe log
-            from tribewatch.capture import send_key
-            send_key(self.config.general.window_title, "l")
+            send_key(window_title, "l")
 
             # Wait for capture cycle to detect tribe log
             check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 3, 10)
@@ -953,12 +1121,15 @@ class TribeWatchApp:
         from PIL import ImageChops, ImageStat
         thumb = img.copy()
         thumb.thumbnail((160, 90))
+        active_threshold = float(
+            getattr(self.config.tribe_log, "active_play_threshold", 2.0) or 2.0
+        )
         if self._prev_thumb is not None and thumb.size == self._prev_thumb.size:
             diff = ImageChops.difference(thumb, self._prev_thumb)
             stat = ImageStat.Stat(diff)
             change_pct = sum(stat.mean) / 3 / 255 * 100  # 0-100%
             self._screen_change_pct = change_pct
-            if change_pct < 2.0:  # screen is "still"
+            if change_pct < active_threshold:  # screen is "still"
                 if self._screen_still_since is None:
                     self._screen_still_since = time.time()
             else:
@@ -971,7 +1142,7 @@ class TribeWatchApp:
         # Enters immediately on first movement, but requires 5 consecutive
         # still frames (~10s) before exiting to avoid flapping.
         was_active = self._active_play
-        screen_moving = self._screen_change_pct >= 2.0
+        screen_moving = self._screen_change_pct >= active_threshold
         if screen_moving:
             self._active_play = True
             self._active_play_still_count = 0
@@ -1001,14 +1172,36 @@ class TribeWatchApp:
             # Mark tribe log as not visible — we're no longer monitoring it
             self._log_header_visible = False
             self._log_visible_since = None
+            self._active_play_last_peek = time.monotonic()
+            self._kick_heartbeat()
         elif not self._active_play and was_active:
             log.info("Screen still for %ds — resuming tribe log & parasaur OCR",
                      self._ACTIVE_PLAY_COOLDOWN * int(self.config.tribe_log.interval))
+            self._kick_heartbeat()
         # Update overlay with current status
         self._update_overlay()
 
         if self._active_play:
-            return
+            # Slow-cadence OCR peek during active play so we still notice the
+            # tribe log being opened mid-session, without doing full OCR every cycle.
+            peek_interval = float(getattr(self.config.tribe_log, "active_play_peek_interval", 0.0) or 0.0)
+            if peek_interval > 0 and (time.monotonic() - self._active_play_last_peek) >= peek_interval:
+                self._active_play_last_peek = time.monotonic()
+                try:
+                    peek_text = await recognize(
+                        img,
+                        engine=self.config.tribe_log.ocr_engine,
+                        upscale=self.config.tribe_log.upscale,
+                        tesseract_path=self.config.tribe_log.tesseract_path,
+                    )
+                    if peek_text and peek_text.lstrip().upper().startswith("LOG"):
+                        log.info("Tribe log detected during active play peek — resuming immediately")
+                        self._active_play = False
+                        self._active_play_still_count = 0
+                except Exception:
+                    log.debug("Active play peek OCR failed", exc_info=True)
+            if self._active_play:
+                return
 
         # Save last capture for debugging
         _debug_dir = Path("debug")
@@ -1051,6 +1244,7 @@ class TribeWatchApp:
         if log_header_visible and not was_visible:
             log.info("Tribe log detected — monitoring active")
             self._log_visible_since = time.time()
+            self._kick_heartbeat()
             # Tribe log reappeared — trigger an immediate tribe window capture
             # to refresh member online/offline status without waiting for the
             # normal tribe polling interval.
@@ -1063,6 +1257,7 @@ class TribeWatchApp:
         elif not log_header_visible and was_visible:
             log.info("Tribe log lost — header no longer visible")
             self._log_visible_since = None
+            self._kick_heartbeat()
 
         if log_header_visible:
             self._last_log_seen_at = time.time()

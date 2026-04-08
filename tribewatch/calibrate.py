@@ -173,16 +173,11 @@ class _OverlayApp:
         # dialog is dismissed during drawing.
         sw = self.root.winfo_screenwidth()
         if region_title:
-            # Background bar behind the title for legibility on light pixels
-            self.canvas.create_rectangle(
-                sw // 2 - 360, 16, sw // 2 + 360, 92,
-                fill="#000000", outline="#FFD700", width=3,
-            )
             self.canvas.create_text(
-                sw // 2, 54,
+                sw // 2, 40,
                 text=f"REGION: {region_title.upper()}",
-                fill="#FFD700",
-                font=("Segoe UI", 26, "bold"),
+                fill="white",
+                font=("Segoe UI", 22, "bold"),
             )
 
         # Instruction text (hidden in prompt mode — shown in the prompt dialog instead)

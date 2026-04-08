@@ -5,7 +5,7 @@
 #define MyAppVersion Trim(FileRead(FileOpen("VERSION")))
 #define MyAppPublisher "TribeWatch"
 #define MyAppURL "https://github.com/frankthetank001/tribewatch-client"
-#define MyAppExeName "TribeWatch.exe"
+#define MyAppExeName "TribeWatch-Dev.exe"
 
 [Setup]
 AppId={{B7A2C3D4-9E1F-4A5B-8C6D-2E3F4A5B6C7D}
@@ -25,7 +25,11 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 CloseApplications=yes
-RestartApplications=yes
+; RestartApplications intentionally NOT set — combined with the
+; post-install [Run] entry it would re-launch TribeWatch twice on
+; upgrade (once via Restart Manager, once via the launch-on-finish
+; checkbox).
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -35,7 +39,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startupentry"; Description: "Start TribeWatch (Dev) when Windows starts"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Files]
-Source: "dist\TribeWatch\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\TribeWatch-Dev\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "tribewatch.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

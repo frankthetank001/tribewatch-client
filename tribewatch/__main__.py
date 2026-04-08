@@ -275,6 +275,29 @@ def _apply_env_overrides(cfg: object) -> None:
     # owner_discord_id lives in discord config (per-tribe).
 
 
+def _open_dashboard_for_tribe(server_url: str, tribe_name: str) -> None:
+    """Open the dashboard in a browser tab, hinting which tribe to land on.
+
+    Used by the rename / new-tribe code paths so the user actually sees
+    something happen after picking an action — instead of the dialog
+    closing silently and leaving the dashboard on a stale tribe.
+    """
+    import webbrowser
+    from urllib.parse import quote
+
+    if not tribe_name or not server_url:
+        return
+    base = server_url.rstrip("/")
+    if base.startswith(("ws://", "wss://")):
+        base = base.replace("wss://", "https://").replace("ws://", "http://")
+    try:
+        webbrowser.open(f"{base}/?tribe_hint={quote(tribe_name)}")
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "Failed to open dashboard for tribe hint", exc_info=True,
+        )
+
+
 def _discover_and_confirm_tribe_name(
     cfg: object, config_path: Path, mode: str = "client",
 ) -> None:
@@ -307,14 +330,10 @@ def _discover_tribe_name_win32(
 
     from tribewatch.config import save_config
 
-    MB_OK = 0x00
     MB_YESNO = 0x04
-    MB_YESNOCANCEL = 0x03
     MB_ICONQUESTION = 0x20
-    MB_ICONINFORMATION = 0x40
     MB_TOPMOST = 0x40000
     IDYES = 6
-    IDNO = 7
 
     title = "TribeWatch \u2014 Tribe Name"
 
@@ -350,20 +369,66 @@ def _discover_tribe_name_win32(
                 save_config(cfg, config_path, mode=mode)
     else:
         if detected and not _tribe_names_match(saved, detected):
-            result = ctypes.windll.user32.MessageBoxW(
-                0,
+            from tribewatch.overlay_ui import show_action_dialog
+            choice = show_action_dialog(
+                title,
                 (
-                    f"Tribe name mismatch:\n\n"
+                    f"Tribe name mismatch.\n\n"
                     f'Saved:      "{saved}"\n'
                     f'Detected:  "{detected}"\n\n'
-                    f"Update to the detected name?"
+                    f"Pick an action to take. The dashboard will open "
+                    f"so you can confirm the result."
                 ),
-                title,
-                MB_YESNO | MB_ICONQUESTION | MB_TOPMOST,
+                buttons=[
+                    ("Rename saved tribe", "rename"),
+                    ("Treat as new tribe", "new"),
+                    ("Keep original", "keep"),
+                ],
+                default="keep",
             )
-            if result == IDYES:
+            if choice == "rename":
+                # Try a server-side rename of the saved tribe → detected.
+                # The client doesn't have a tribe_id at this point, so
+                # resolve it via the REST API by saved name.
+                client_token = getattr(cfg.server, "client_token", "")
+                if client_token:
+                    try:
+                        import asyncio as _asyncio
+                        from tribewatch import server_api as _sapi
+
+                        async def _do_rename():
+                            tid = await _sapi.find_tribe_id_by_name(
+                                cfg.server.server_url, client_token, name=saved,
+                            )
+                            if tid:
+                                await _sapi.rename_tribe(
+                                    cfg.server.server_url, client_token,
+                                    tribe_id=tid, new_name=detected,
+                                )
+                                logging.getLogger(__name__).info(
+                                    "Server-side rename %r -> %r (tribe_id=%d) ok",
+                                    saved, detected, tid,
+                                )
+                            else:
+                                logging.getLogger(__name__).warning(
+                                    "Server-side rename: could not resolve "
+                                    "tribe_id for %r", saved,
+                                )
+                        _asyncio.run(_do_rename())
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            "Server-side rename failed; opening dashboard anyway"
+                        )
                 cfg.tribe.tribe_name = detected
                 save_config(cfg, config_path, mode=mode)
+                _open_dashboard_for_tribe(cfg.server.server_url, detected)
+            elif choice == "new":
+                cfg.tribe.tribe_name = detected
+                save_config(cfg, config_path, mode=mode)
+                _open_dashboard_for_tribe(cfg.server.server_url, detected)
+            else:
+                # keep / closed: keep saved name unchanged.
+                pass
 
 
 def _win32_input_box(prompt: str, title: str) -> str:
@@ -438,8 +503,11 @@ def _discover_tribe_name_console(
         if detected and not _tribe_names_match(saved, detected):
             print(f'\nSaved tribe:  "{saved}"')
             print(f'Detected:     "{detected}"')
-            answer = input("Update tribe name? [y/N]: ").strip().lower()
-            if answer in ("y", "yes"):
+            print("  [r]ename — adopt detected name (sync with server via dashboard)")
+            print("  [n]ew    — treat detected as a new tribe")
+            print("  [k]eep   — keep saved name (default)")
+            answer = input("Choice [r/n/K]: ").strip().lower()
+            if answer in ("r", "rename", "n", "new"):
                 cfg.tribe.tribe_name = detected
                 save_config(cfg, config_path, mode=mode)
                 print(f'Tribe name updated: "{detected}"')
@@ -462,15 +530,28 @@ def _apply_resolution_preset(cfg: object) -> bool:
         from tribewatch.server_id import get_game_resolution
 
         resolution = get_game_resolution()
-        if resolution is None:
-            log.debug("Could not detect game resolution — skipping preset auto-apply")
-            return True
-
         cal_res = getattr(cfg.general, "calibration_resolution", None)
+
+        if resolution is None:
+            # No detected game resolution. If the user already has a
+            # saved calibration, trust it. Otherwise this is a fresh /
+            # post-reset state and the dataclass default bbox is
+            # garbage — force the setup wizard.
+            if cal_res:
+                log.debug("Could not detect game resolution — keeping saved calibration")
+                return True
+            log.warning(
+                "Could not detect game resolution and no saved calibration — "
+                "forcing setup wizard",
+            )
+            return False
+
         cal_matches = bool(cal_res) and tuple(cal_res) == resolution
 
         # User has already calibrated for this exact resolution — keep their bboxes.
-        if cal_matches:
+        # But if the saved bbox is empty (e.g. truncated state), fall through
+        # so the preset gets applied.
+        if cal_matches and cfg.tribe_log.bbox:
             log.debug(
                 "Resolution %dx%d matches saved calibration — keeping user bboxes",
                 resolution[0], resolution[1],
@@ -532,7 +613,15 @@ def _check_for_updates() -> None:
             print("    ...")
 
     if update["is_installer"]:
-        answer = input("\n  Download and install update now? [Y/n] ").strip().lower()
+        # On a windowed/no-console build (e.g. launched from the start-menu
+        # shortcut), input() will raise or hang because there's no stdin.
+        # In that case auto-accept and proceed to download silently.
+        has_console = sys.stdin is not None and sys.stdin.isatty()
+        if has_console:
+            answer = input("\n  Download and install update now? [Y/n] ").strip().lower()
+        else:
+            log.info("No console attached — auto-accepting update prompt")
+            answer = "y"
         if answer in ("", "y", "yes"):
             print("  Downloading update...")
             try:
@@ -549,27 +638,32 @@ def _check_for_updates() -> None:
             print("  Skipping update.")
     else:
         print(f"\n  Download the update at: {update['release_url']}")
-        input("  Press Enter to continue...")
+        if sys.stdin is not None and sys.stdin.isatty():
+            input("  Press Enter to continue...")
 
     print()
 
 
-def _cmd_run(config_path: Path) -> None:
+def _cmd_run(config_path: Path, *, skip_unverified_setup: bool = False) -> None:
     from tribewatch.config import client_config_path, load_config
     from tribewatch.singleton import ensure_single_instance
 
     from dotenv import load_dotenv
     load_dotenv()
 
-    # Kill any existing instance before we start
-    ensure_single_instance()
-
     # Client mode: load ONLY the client config file
     cp = client_config_path(config_path)
     cfg = load_config(cp)
 
     _apply_env_overrides(cfg)
+    # Configure logging BEFORE singleton enforcement so its diagnostic
+    # warnings (process scan results, kill failures, etc) actually land
+    # in tribewatch.log instead of being silently swallowed by the
+    # uninitialized root logger.
     _setup_logging(cfg.general.log_level)
+
+    # Kill any existing instance before we start
+    ensure_single_instance()
 
     # --- Auto-update check (frozen/installed builds only) ---
     from tribewatch.updater import is_frozen
@@ -577,7 +671,7 @@ def _cmd_run(config_path: Path) -> None:
         _check_for_updates()
 
     verified = _apply_resolution_preset(cfg)
-    if not verified:
+    if not verified and not skip_unverified_setup:
         try:
             from tribewatch.server_id import get_game_resolution
             res = get_game_resolution()
@@ -729,58 +823,80 @@ async def _handle_tribe_name_change(
     log.info("Tribe name change detected: %r -> %r — pausing monitoring", old_name, detected_name)
 
     try:
-        import ctypes
+        from tribewatch.overlay_ui import show_action_dialog
 
-        MB_YESNOCANCEL = 0x03
-        MB_ICONQUESTION = 0x20
-        MB_TOPMOST = 0x40000
-        IDYES = 6
-        IDNO = 7
-        # IDCANCEL = 2
-
-        result = await asyncio.get_event_loop().run_in_executor(
+        choice = await asyncio.get_event_loop().run_in_executor(
             None,
-            ctypes.windll.user32.MessageBoxW,
-            0,
+            show_action_dialog,
+            "TribeWatch \u2014 Tribe Name Changed",
             (
                 f"Tribe name changed!\n\n"
                 f'Previous:  "{old_name}"\n'
                 f'Detected:  "{detected_name}"\n\n'
-                f"Yes = Rename existing tribe to new name\n"
-                f"No = New tribe (keep old data separate)\n"
-                f"Cancel = Ignore (keep using old name)"
+                f"Pick an action — the dashboard will open so you can "
+                f"confirm the result."
             ),
-            "TribeWatch \u2014 Tribe Name Changed",
-            MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST,
+            [
+                ("Rename existing tribe", "rename"),
+                ("Track as new tribe", "new"),
+                ("Ignore (keep old name)", "ignore"),
+            ],
+            "ignore",
         )
 
         from tribewatch.config import client_config_path, save_config
+        from tribewatch import server_api
 
         save_path = client_config_path(config_path)
         save_mode = "client"
 
-        if result == IDYES:
-            # Rename existing tribe in all stores
+        if choice == "rename":
             log.info("User chose: rename tribe %r -> %r", old_name, detected_name)
+            # Local SQLite stores
             tribe_store = getattr(app, "_tribe_store", None)
             event_store = getattr(app, "_event_store", None)
             if tribe_store:
                 await tribe_store.rename_tribe(old_name, detected_name)
             if event_store:
                 await event_store.rename_tribe(old_name, detected_name)
+            # Server-side rename: look up the tribe_id by old name (the
+            # client doesn't track tribe_id locally, so resolve on demand
+            # via the REST API).
+            client_token = getattr(cfg.server, "client_token", "")
+            if client_token:
+                try:
+                    tribe_id = await server_api.find_tribe_id_by_name(
+                        cfg.server.server_url, client_token, name=old_name,
+                    )
+                    if tribe_id:
+                        await server_api.rename_tribe(
+                            cfg.server.server_url, client_token,
+                            tribe_id=tribe_id, new_name=detected_name,
+                        )
+                        log.info("Server-side rename %r -> %r (tribe_id=%d) ok",
+                                 old_name, detected_name, tribe_id)
+                    else:
+                        log.warning(
+                            "Server-side rename: could not resolve tribe_id "
+                            "for %r — opening dashboard so user can rename manually",
+                            old_name,
+                        )
+                except Exception:
+                    log.exception("Server-side rename failed; opening dashboard anyway")
             cfg.tribe.tribe_name = detected_name
             app.config.tribe.tribe_name = detected_name
             await asyncio.get_event_loop().run_in_executor(
                 None, lambda: save_config(cfg, save_path, mode=save_mode),
             )
-        elif result == IDNO:
-            # New tribe — just update the config, old data stays under old name
+            _open_dashboard_for_tribe(cfg.server.server_url, detected_name)
+        elif choice == "new":
             log.info("User chose: new tribe %r (old data kept as %r)", detected_name, old_name)
             cfg.tribe.tribe_name = detected_name
             app.config.tribe.tribe_name = detected_name
             await asyncio.get_event_loop().run_in_executor(
                 None, lambda: save_config(cfg, save_path, mode=save_mode),
             )
+            _open_dashboard_for_tribe(cfg.server.server_url, detected_name)
         else:
             log.info("User chose: ignore tribe name change, keeping %r", old_name)
     except Exception:
@@ -789,6 +905,136 @@ async def _handle_tribe_name_change(
         app._tribe_name_change_pending = False
         app._paused = False
         log.info("Tribe name change handled — monitoring resumed")
+
+
+async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
+    """Server reported the (tribe_name, server_id) is unknown for this user.
+
+    Show a Win32 dialog so the operator can pick whether to keep an
+    existing tribe, rename one to the newly-detected name, or create a
+    brand-new tribe — and then call the matching server REST API.
+    """
+    log = logging.getLogger(__name__)
+    detected = (msg.get("detected_name") or "").strip()
+    server_id = (msg.get("server_id") or "").strip()
+    candidates = msg.get("candidates") or []
+    if not detected or not server_id:
+        log.warning("tribe_unknown without detected_name/server_id, ignoring: %r", msg)
+        return
+
+    from tribewatch.config import client_config_path, save_config
+    from tribewatch import server_api
+
+    save_path = client_config_path(config_path)
+    save_mode = "client"
+    server_url = cfg.server.server_url
+    client_token = cfg.server.client_token
+    if not client_token:
+        log.warning("tribe_unknown but no client_token configured — cannot call server API")
+        return
+
+    title = "TribeWatch \u2014 Tribe Setup"
+
+    loop = asyncio.get_event_loop()
+
+    from tribewatch.overlay_ui import show_action_dialog
+
+    if len(candidates) == 1:
+        cand = candidates[0]
+        cand_name = cand.get("tribe_name", "")
+        cand_id = int(cand.get("tribe_id") or 0)
+        body = (
+            f'Server doesn\'t recognise tribe "{detected}" on this ARK server.\n\n'
+            f'Your existing tribe here:\n'
+            f'    "{cand_name}"\n\n'
+            f"Pick an action — the dashboard will open so you can "
+            f"confirm the result."
+        )
+        choice = await loop.run_in_executor(
+            None,
+            show_action_dialog,
+            title,
+            body,
+            [
+                (f'Rename "{cand_name}" → "{detected}"', "rename"),
+                (f'Create "{detected}" as new tribe', "new"),
+                (f'Keep "{cand_name}" (ignore detected)', "keep"),
+            ],
+            "keep",
+        )
+        try:
+            if choice == "rename" and cand_id:
+                log.info("tribe_unknown: renaming tribe_id=%d %r -> %r",
+                         cand_id, cand_name, detected)
+                await server_api.rename_tribe(
+                    server_url, client_token,
+                    tribe_id=cand_id, new_name=detected,
+                )
+                cfg.tribe.tribe_name = detected
+                await loop.run_in_executor(
+                    None, lambda: save_config(cfg, save_path, mode=save_mode),
+                )
+                _open_dashboard_for_tribe(server_url, detected)
+            elif choice == "new":
+                log.info("tribe_unknown: creating new tribe %r on %r", detected, server_id)
+                await server_api.claim_tribe(
+                    server_url, client_token, name=detected, server_id=server_id,
+                )
+                cfg.tribe.tribe_name = detected
+                await loop.run_in_executor(
+                    None, lambda: save_config(cfg, save_path, mode=save_mode),
+                )
+                _open_dashboard_for_tribe(server_url, detected)
+            else:
+                log.info("tribe_unknown: keeping existing tribe %r", cand_name)
+                cfg.tribe.tribe_name = cand_name
+                await loop.run_in_executor(
+                    None, lambda: save_config(cfg, save_path, mode=save_mode),
+                )
+        except Exception:
+            log.exception("tribe_unknown action failed")
+        return
+
+    if not candidates:
+        body = (
+            f'Server doesn\'t recognise tribe "{detected}" on this ARK server,\n'
+            f'and you don\'t have any other tribes here yet.'
+        )
+        choice = await loop.run_in_executor(
+            None,
+            show_action_dialog,
+            title,
+            body,
+            [
+                (f'Create "{detected}" as new tribe', "create"),
+                ("Cancel", "cancel"),
+            ],
+            "cancel",
+        )
+        if choice == "create":
+            try:
+                log.info("tribe_unknown: claiming new tribe %r on %r", detected, server_id)
+                await server_api.claim_tribe(
+                    server_url, client_token, name=detected, server_id=server_id,
+                )
+                cfg.tribe.tribe_name = detected
+                await loop.run_in_executor(
+                    None, lambda: save_config(cfg, save_path, mode=save_mode),
+                )
+                _open_dashboard_for_tribe(server_url, detected)
+            except Exception:
+                log.exception("tribe_unknown claim failed")
+        else:
+            log.info("tribe_unknown: user cancelled new tribe creation")
+        return
+
+    # Multiple candidates — too ambiguous for a MessageBox; tell the
+    # operator to use the dashboard. Logged once per occurrence.
+    cand_str = ", ".join(c.get("tribe_name", "?") for c in candidates)
+    log.warning(
+        "tribe_unknown with %d candidates (%s) — please rename or create from the dashboard.",
+        len(candidates), cand_str,
+    )
 
 
 def _handle_reconnect(app: Any, auto: bool = False, use_browser: bool | None = None) -> None:
@@ -959,7 +1205,10 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
         _log = logging.getLogger(__name__)
         _log.info("Client token missing or expired — starting Discord OAuth...")
 
-        token = await obtain_client_token_interactive(cfg.server.server_url)
+        token = await obtain_client_token_interactive(
+            cfg.server.server_url,
+            tribe_hint=cfg.tribe.tribe_name or "",
+        )
         if token:
             cfg.server.client_token = token
             save_config(cfg, config_path, mode="client")
@@ -996,6 +1245,9 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
         # runs until app.stop() (either user shutdown or remote restart),
         # cleans up, then either breaks or loops to rebuild.
         while True:
+            async def _on_tribe_unknown(msg: dict) -> None:
+                await _handle_tribe_unknown(cfg, config_path, msg)
+
             relay = ServerRelay(
                 server_url=cfg.server.server_url,
                 auth_token=cfg.server.auth_token,
@@ -1004,6 +1256,7 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
                 on_control=_on_control,
                 on_config_update=_on_config_update,
                 on_auth_expired=_on_auth_expired,
+                on_tribe_unknown=_on_tribe_unknown,
             )
             app = TribeWatchApp(cfg, relay=relay)
             app._auto_reconnect_cb = lambda: _handle_reconnect(app, auto=True)
@@ -1080,6 +1333,71 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
         print("\nShutting down...")
 
 
+
+
+def _cmd_reset_calibration(config_path: Path) -> None:
+    """Clear manual calibration so resolution presets re-apply on next run."""
+    from tribewatch.config import client_config_path
+    cp = client_config_path(config_path)
+    if not cp.exists():
+        print(f"No config file found at {cp}")
+        return
+    import tomllib
+    import tomli_w
+    with open(cp, "rb") as f:
+        data = tomllib.load(f)
+    data.get("general", {}).pop("calibration_resolution", None)
+    for section in ("tribe_log", "parasaur", "tribe"):
+        data.get(section, {}).pop("bbox", None)
+    with open(cp, "wb") as f:
+        tomli_w.dump(data, f)
+    print(f"Calibration reset. Bboxes cleared from {cp}")
+    print("Run TribeWatch again — resolution presets will be auto-applied.")
+
+
+def _cmd_reset_all(config_path: Path) -> None:
+    """Delete client config, dedup state, calibration previews, and debug folder."""
+    from tribewatch.config import client_config_path
+    cp = client_config_path(config_path)
+    removed: list[Path] = []
+
+    if cp.exists():
+        cp.unlink()
+        removed.append(cp)
+
+    work_dir = cp.parent
+    for pattern in (
+        "tribewatch_state*.json",
+        "tribewatch_state*.json.tmp",
+        "tribewatch_calibration_preview.png",
+        "parasaur_calibration_preview.png",
+        "tribe_calibration_preview.png",
+    ):
+        for f in work_dir.glob(pattern):
+            try:
+                f.unlink()
+                removed.append(f)
+            except Exception:
+                pass
+
+    debug_dir = work_dir / "debug"
+    if debug_dir.exists():
+        for f in debug_dir.iterdir():
+            try:
+                f.unlink()
+            except Exception:
+                pass
+        try:
+            debug_dir.rmdir()
+            removed.append(debug_dir)
+        except Exception:
+            pass
+
+    print("Full reset complete. Removed:")
+    for p in removed:
+        print(f"  - {p}")
+    print()
+    print("Run TribeWatch again to start fresh — you'll go through OAuth and calibration again.")
 
 
 def main() -> None:
@@ -1162,71 +1480,11 @@ def main() -> None:
             return
 
     if args.reset_calibration:
-        from tribewatch.config import client_config_path
-        cp = client_config_path(config_path)
-        if not cp.exists():
-            print(f"No config file found at {cp}")
-            return
-        import tomllib
-        import tomli_w
-        with open(cp, "rb") as f:
-            data = tomllib.load(f)
-        # Clear calibration_resolution so presets re-apply on next run
-        data.get("general", {}).pop("calibration_resolution", None)
-        # Clear manual bboxes
-        for section in ("tribe_log", "parasaur", "tribe"):
-            data.get(section, {}).pop("bbox", None)
-        with open(cp, "wb") as f:
-            tomli_w.dump(data, f)
-        print(f"Calibration reset. Bboxes cleared from {cp}")
-        print("Run TribeWatch again — resolution presets will be auto-applied.")
+        _cmd_reset_calibration(config_path)
         return
 
     if args.reset_all:
-        from tribewatch.config import client_config_path
-        cp = client_config_path(config_path)
-        removed: list[Path] = []
-
-        # Delete client config
-        if cp.exists():
-            cp.unlink()
-            removed.append(cp)
-
-        # Delete dedup state files and debug artifacts in the working dir
-        work_dir = cp.parent
-        for pattern in (
-            "tribewatch_state*.json",
-            "tribewatch_state*.json.tmp",
-            "tribewatch_calibration_preview.png",
-            "parasaur_calibration_preview.png",
-            "tribe_calibration_preview.png",
-        ):
-            for f in work_dir.glob(pattern):
-                try:
-                    f.unlink()
-                    removed.append(f)
-                except Exception:
-                    pass
-
-        # Delete debug folder contents
-        debug_dir = work_dir / "debug"
-        if debug_dir.exists():
-            for f in debug_dir.iterdir():
-                try:
-                    f.unlink()
-                except Exception:
-                    pass
-            try:
-                debug_dir.rmdir()
-                removed.append(debug_dir)
-            except Exception:
-                pass
-
-        print("Full reset complete. Removed:")
-        for p in removed:
-            print(f"  - {p}")
-        print()
-        print("Run TribeWatch again to start fresh — you'll go through OAuth and calibration again.")
+        _cmd_reset_all(config_path)
         return
 
     if args.calibrate:
@@ -1257,7 +1515,9 @@ def main() -> None:
     elif args.test_discord:
         _cmd_test_discord(config_path)
     else:
-        _cmd_run(config_path)
+        # If we just ran the setup wizard explicitly, don't let _cmd_run
+        # re-trigger it again via the unverified-resolution gate.
+        _cmd_run(config_path, skip_unverified_setup=bool(args.setup))
 
 
 if __name__ == "__main__":

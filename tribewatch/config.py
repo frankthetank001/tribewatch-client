@@ -12,11 +12,20 @@ import tomli_w
 
 @dataclass
 class TribeLogConfig:
-    bbox: list[int] = field(default_factory=lambda: [0, 0, 800, 600])
+    bbox: list[int] = field(default_factory=list)  # empty = needs calibration
     interval: float = 2.0
     ocr_engine: str = "paddleocr"  # winrt / tesseract / easyocr / paddleocr
     upscale: int = 2
     tesseract_path: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    # While the screen is changing (active play), run a slow-cadence OCR
+    # peek every N seconds so we still notice the tribe log being opened
+    # without doing full OCR every cycle. 0 disables peeks during motion.
+    active_play_peek_interval: float = 8.0
+    # Pixel-change percentage above which a frame is considered "moving"
+    # (i.e. the user is actively playing). Lower = more sensitive to
+    # subtle motion (HUD blinks, water shimmer); higher = only flags
+    # bigger camera moves. Default 2.0%.
+    active_play_threshold: float = 2.0
 
 
 @dataclass
@@ -244,13 +253,16 @@ _register_nested_object(ParasaurConfig, "babies_alerts", ParasaurAlertSettings)
 def validate_config(cfg: TribeWatchConfig) -> None:
     """Validate a loaded config, raising ValueError on problems."""
     bbox = cfg.tribe_log.bbox
-    if len(bbox) != 4 or not all(isinstance(v, int) for v in bbox):
-        raise ValueError(f"tribe_log.bbox must be 4 integers, got {bbox!r}")
-    left, top, right, bottom = bbox
-    if left >= right:
-        raise ValueError(f"tribe_log.bbox left ({left}) must be < right ({right})")
-    if top >= bottom:
-        raise ValueError(f"tribe_log.bbox top ({top}) must be < bottom ({bottom})")
+    # Empty bbox = uncalibrated; the run path forces the setup wizard
+    # before reaching capture, so an empty value is valid at load time.
+    if bbox:
+        if len(bbox) != 4 or not all(isinstance(v, int) for v in bbox):
+            raise ValueError(f"tribe_log.bbox must be 4 integers, got {bbox!r}")
+        left, top, right, bottom = bbox
+        if left >= right:
+            raise ValueError(f"tribe_log.bbox left ({left}) must be < right ({right})")
+        if top >= bottom:
+            raise ValueError(f"tribe_log.bbox top ({top}) must be < bottom ({bottom})")
 
     _valid_engines = ("winrt", "tesseract", "easyocr", "paddleocr")
     if cfg.tribe_log.ocr_engine not in _valid_engines:
