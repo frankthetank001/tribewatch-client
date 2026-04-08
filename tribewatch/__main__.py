@@ -1131,7 +1131,10 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
         _log = logging.getLogger(__name__)
         _log.info("Client token missing or expired — starting Discord OAuth...")
 
-        token = await obtain_client_token_interactive(cfg.server.server_url)
+        token = await obtain_client_token_interactive(
+            cfg.server.server_url,
+            tribe_hint=cfg.tribe.tribe_name or "",
+        )
         if token:
             cfg.server.client_token = token
             save_config(cfg, config_path, mode="client")
