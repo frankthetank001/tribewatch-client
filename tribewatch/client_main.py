@@ -98,33 +98,6 @@ def main() -> None:
     args = parser.parse_args()
     config_path: Path = args.config
 
-    if args.setup:
-        # _cmd_setup returns None on success / False on user cancel.
-        # Mirror __main__.main() behaviour: fall through after a
-        # successful setup so the client launches automatically.
-        # Without this, the Start Menu "Setup" shortcut completes
-        # calibration and silently exits, leaving the user staring
-        # at nothing.
-        result = _cmd_setup(config_path)
-        if result is False:
-            return
-
-    if args.calibrate:
-        _cmd_calibrate(config_path)
-        return
-
-    if args.calibrate_manual:
-        _cmd_calibrate_manual(config_path)
-        return
-
-    if args.calibrate_parasaur:
-        _cmd_calibrate_parasaur(config_path)
-        return
-
-    if args.calibrate_tribe:
-        _cmd_calibrate_tribe(config_path)
-        return
-
     # Client mode always uses the client config file
     effective_path = client_config_path(config_path)
     if not effective_path.exists():
@@ -137,11 +110,41 @@ def main() -> None:
     # land in tribewatch.log.
     _setup_logging(cfg.general.log_level)
 
-    # Kill any other TribeWatch instance still running. The packaged
-    # exe enters via this client_main module — NOT __main__._cmd_run —
-    # so the singleton call has to live here too. Without this, two
-    # exes can coexist indefinitely with no log output explaining why.
+    # Kill any other TribeWatch instance still running BEFORE running
+    # any wizard / calibration GUI. Otherwise the post-install launch
+    # and a Start Menu "Setup" shortcut will coexist for the duration
+    # of the wizard, leaving the user staring at two windows.
     ensure_single_instance()
+
+    if args.setup:
+        # _cmd_setup returns None on success / False on user cancel.
+        # Mirror __main__.main() behaviour: fall through after a
+        # successful setup so the client launches automatically.
+        # Without this, the Start Menu "Setup" shortcut completes
+        # calibration and silently exits, leaving the user staring
+        # at nothing.
+        result = _cmd_setup(effective_path)
+        if result is False:
+            return
+        # Reload config so the wizard's writes are picked up
+        cfg = load_config(effective_path)
+        _apply_env_overrides(cfg)
+
+    if args.calibrate:
+        _cmd_calibrate(effective_path)
+        return
+
+    if args.calibrate_manual:
+        _cmd_calibrate_manual(effective_path)
+        return
+
+    if args.calibrate_parasaur:
+        _cmd_calibrate_parasaur(effective_path)
+        return
+
+    if args.calibrate_tribe:
+        _cmd_calibrate_tribe(effective_path)
+        return
 
     # Prompt for server URL if not set (first launch)
     if not cfg.server.server_url:
