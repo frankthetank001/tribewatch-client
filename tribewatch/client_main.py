@@ -183,7 +183,36 @@ def main() -> None:
     if is_frozen():
         _check_for_updates()
 
-    _apply_resolution_preset(cfg)
+    verified = _apply_resolution_preset(cfg)
+    if not verified and not args.setup:
+        # Same forced-setup gate as __main__._cmd_run: derived presets
+        # for unverified resolutions are naive scaled-from-1080p guesses
+        # and are usually way off for non-16:9 aspect ratios. Force the
+        # user through the calibration wizard before running.
+        try:
+            from tribewatch.server_id import get_game_resolution
+            res = get_game_resolution()
+        except Exception:
+            res = None
+        res_str = f"{res[0]}x{res[1]}" if res else "your current"
+        print()
+        print("=" * 70)
+        print(f"  Unverified resolution: {res_str}")
+        print("=" * 70)
+        print(
+            "  TribeWatch derived capture regions for this resolution from the\n"
+            "  1920x1080 baseline, but it has not been hand-verified. The setup\n"
+            "  wizard will now open so you can confirm or adjust the regions."
+        )
+        print("=" * 70)
+        print()
+        try:
+            _cmd_setup(effective_path)
+            cfg = load_config(effective_path)
+            _apply_env_overrides(cfg)
+        except Exception:
+            import logging as _logging
+            _logging.getLogger(__name__).exception("Forced setup wizard failed")
 
     # Tribe name discovery
     if cfg.tribe.bbox:
