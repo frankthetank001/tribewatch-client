@@ -134,22 +134,6 @@ def is_window_foreground(title: str) -> bool:
     return user32.GetForegroundWindow() == hwnd
 
 
-def focus_window(title: str) -> bool:
-    """Bring the window with *title* to the foreground and return True on success.
-
-    Restores from minimized if needed and uses the keybd_event Alt-key
-    trick to bypass Windows' foreground-lock when called from a
-    background process. Verifies the focus actually transferred before
-    returning.
-    """
-    if not _IS_WIN32:
-        return False
-    hwnd = _find_window_by_title(title)
-    if not hwnd:
-        return False
-    return _focus_window(hwnd)
-
-
 def send_key(title: str, key: str) -> bool:
     """Send a key press to a window via PostMessage (no focus steal).
 
