@@ -25,7 +25,11 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 CloseApplications=yes
-RestartApplications=yes
+; RestartApplications intentionally NOT set — combined with the
+; post-install [Run] entry it would re-launch TribeWatch twice on
+; upgrade (once via Restart Manager, once via the launch-on-finish
+; checkbox).
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
