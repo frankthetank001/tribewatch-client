@@ -616,6 +616,14 @@ class TribeWatchApp:
             "events_today_count": self._events_today_count,
             "total_events": self._total_events_count,
             "idle_alert_minutes": self.config.alerts.idle_alert_minutes,
+            "tribe_log_tunables": {
+                "active_play_threshold": getattr(
+                    self.config.tribe_log, "active_play_threshold", 2.0,
+                ),
+                "active_play_peek_interval": getattr(
+                    self.config.tribe_log, "active_play_peek_interval", 8.0,
+                ),
+            },
         }
 
         if self._running:
@@ -1113,12 +1121,15 @@ class TribeWatchApp:
         from PIL import ImageChops, ImageStat
         thumb = img.copy()
         thumb.thumbnail((160, 90))
+        active_threshold = float(
+            getattr(self.config.tribe_log, "active_play_threshold", 2.0) or 2.0
+        )
         if self._prev_thumb is not None and thumb.size == self._prev_thumb.size:
             diff = ImageChops.difference(thumb, self._prev_thumb)
             stat = ImageStat.Stat(diff)
             change_pct = sum(stat.mean) / 3 / 255 * 100  # 0-100%
             self._screen_change_pct = change_pct
-            if change_pct < 2.0:  # screen is "still"
+            if change_pct < active_threshold:  # screen is "still"
                 if self._screen_still_since is None:
                     self._screen_still_since = time.time()
             else:
@@ -1131,7 +1142,7 @@ class TribeWatchApp:
         # Enters immediately on first movement, but requires 5 consecutive
         # still frames (~10s) before exiting to avoid flapping.
         was_active = self._active_play
-        screen_moving = self._screen_change_pct >= 2.0
+        screen_moving = self._screen_change_pct >= active_threshold
         if screen_moving:
             self._active_play = True
             self._active_play_still_count = 0

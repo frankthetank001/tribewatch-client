@@ -21,6 +21,11 @@ class TribeLogConfig:
     # peek every N seconds so we still notice the tribe log being opened
     # without doing full OCR every cycle. 0 disables peeks during motion.
     active_play_peek_interval: float = 8.0
+    # Pixel-change percentage above which a frame is considered "moving"
+    # (i.e. the user is actively playing). Lower = more sensitive to
+    # subtle motion (HUD blinks, water shimmer); higher = only flags
+    # bigger camera moves. Default 2.0%.
+    active_play_threshold: float = 2.0
 
 
 @dataclass
