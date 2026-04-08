@@ -387,6 +387,38 @@ def _discover_tribe_name_win32(
                 default="keep",
             )
             if choice == "rename":
+                # Try a server-side rename of the saved tribe → detected.
+                # The client doesn't have a tribe_id at this point, so
+                # resolve it via the REST API by saved name.
+                client_token = getattr(cfg.server, "client_token", "")
+                if client_token:
+                    try:
+                        import asyncio as _asyncio
+                        from tribewatch import server_api as _sapi
+
+                        async def _do_rename():
+                            tid = await _sapi.find_tribe_id_by_name(
+                                cfg.server.server_url, client_token, name=saved,
+                            )
+                            if tid:
+                                await _sapi.rename_tribe(
+                                    cfg.server.server_url, client_token,
+                                    tribe_id=tid, new_name=detected,
+                                )
+                                logging.getLogger(__name__).info(
+                                    "Server-side rename %r -> %r (tribe_id=%d) ok",
+                                    saved, detected, tid,
+                                )
+                            else:
+                                logging.getLogger(__name__).warning(
+                                    "Server-side rename: could not resolve "
+                                    "tribe_id for %r", saved,
+                                )
+                        _asyncio.run(_do_rename())
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            "Server-side rename failed; opening dashboard anyway"
+                        )
                 cfg.tribe.tribe_name = detected
                 save_config(cfg, config_path, mode=mode)
                 _open_dashboard_for_tribe(cfg.server.server_url, detected)
@@ -827,15 +859,28 @@ async def _handle_tribe_name_change(
                 await tribe_store.rename_tribe(old_name, detected_name)
             if event_store:
                 await event_store.rename_tribe(old_name, detected_name)
-            # Server-side rename if we know the tribe id
-            tribe_id = getattr(app, "_tribe_id", None)
+            # Server-side rename: look up the tribe_id by old name (the
+            # client doesn't track tribe_id locally, so resolve on demand
+            # via the REST API).
             client_token = getattr(cfg.server, "client_token", "")
-            if tribe_id and client_token:
+            if client_token:
                 try:
-                    await server_api.rename_tribe(
-                        cfg.server.server_url, client_token,
-                        tribe_id=int(tribe_id), new_name=detected_name,
+                    tribe_id = await server_api.find_tribe_id_by_name(
+                        cfg.server.server_url, client_token, name=old_name,
                     )
+                    if tribe_id:
+                        await server_api.rename_tribe(
+                            cfg.server.server_url, client_token,
+                            tribe_id=tribe_id, new_name=detected_name,
+                        )
+                        log.info("Server-side rename %r -> %r (tribe_id=%d) ok",
+                                 old_name, detected_name, tribe_id)
+                    else:
+                        log.warning(
+                            "Server-side rename: could not resolve tribe_id "
+                            "for %r — opening dashboard so user can rename manually",
+                            old_name,
+                        )
                 except Exception:
                     log.exception("Server-side rename failed; opening dashboard anyway")
             cfg.tribe.tribe_name = detected_name
