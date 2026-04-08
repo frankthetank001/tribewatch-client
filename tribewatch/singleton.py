@@ -17,9 +17,48 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_LOCK_FILE = Path(os.environ.get("APPDATA", Path.home())) / "TribeWatch" / "tribewatch.pid"
+def _own_exe_name() -> str | None:
+    """Return the lowercased basename of the current executable.
 
-# Process names that indicate another TribeWatch instance
+    Used by the process scan to filter — a TribeWatch.exe install
+    only kills other TribeWatch.exe processes, and a TribeWatch-Dev.exe
+    install only kills other TribeWatch-Dev.exe processes. This lets
+    dev + stable installs coexist on the same machine without the
+    singleton enforcement killing each other.
+
+    Returns None when running from source (`python -m tribewatch`),
+    in which case the scan falls back to matching ANY frozen exe AND
+    other python.exe processes with `tribewatch` in argv.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    try:
+        return Path(sys.executable).name.lower()
+    except Exception:
+        return None
+
+
+def _install_namespace() -> str:
+    """Return a per-install lockfile namespace.
+
+    Frozen exe → derived from the install dir name (e.g. "TribeWatch"
+    or "TribeWatch-Dev"), so dev and stable installs have separate
+    PID lockfiles. Source runs share the default "TribeWatch" namespace.
+    """
+    if not getattr(sys, "frozen", False):
+        return "TribeWatch"
+    try:
+        # PyInstaller's sys.executable lives at <install>/TribeWatch.exe
+        return Path(sys.executable).parent.name
+    except Exception:
+        return "TribeWatch"
+
+
+_LOCK_FILE = Path(os.environ.get("APPDATA", Path.home())) / _install_namespace() / "tribewatch.pid"
+
+# Process names that indicate another TribeWatch instance. Frozen
+# instances scope to their own name only via _own_exe_name(); source
+# runs scan for both frozen variants AND python with -m tribewatch.
 _FROZEN_EXE_NAMES = {"tribewatch.exe", "tribewatch-dev.exe"}
 # When running from source, we look for python.exe with "tribewatch" in argv
 _PYTHON_EXE_NAMES = {"python.exe", "pythonw.exe", "python3.exe"}
@@ -28,9 +67,11 @@ _PYTHON_EXE_NAMES = {"python.exe", "pythonw.exe", "python3.exe"}
 def _find_other_tribewatch_pids() -> list[int]:
     """Enumerate every running TribeWatch instance other than ourselves.
 
-    Catches both frozen .exe builds (TribeWatch.exe / TribeWatch-Dev.exe)
-    and dev source runs (python.exe with "tribewatch" in argv). Returns
-    a list of PIDs to terminate.
+    Frozen install → only matches processes with the SAME exe name as
+    ourselves (TribeWatch.exe or TribeWatch-Dev.exe), so dev and stable
+    installs can coexist. Source run → matches both frozen variants
+    AND python with -m tribewatch in argv (so launching the dev source
+    will tear down any stale frozen instance for testing).
     """
     try:
         import psutil
@@ -38,6 +79,7 @@ def _find_other_tribewatch_pids() -> list[int]:
         return []
 
     self_pid = os.getpid()
+    own_name = _own_exe_name()  # None when running from source
     matches: list[int] = []
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
@@ -45,6 +87,12 @@ def _find_other_tribewatch_pids() -> list[int]:
             if pid == self_pid:
                 continue
             name = (proc.info.get("name") or "").lower()
+            if own_name is not None:
+                # Frozen — only kill siblings of the same install
+                if name == own_name:
+                    matches.append(pid)
+                continue
+            # Source run — broader sweep
             if name in _FROZEN_EXE_NAMES:
                 matches.append(pid)
                 continue

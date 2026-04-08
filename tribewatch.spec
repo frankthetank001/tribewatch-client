@@ -12,6 +12,14 @@ block_cipher = None
 # silently returns [], and multiple instances coexist.
 _psutil_submodules = collect_submodules('psutil')
 
+# Dev builds use a different exe name + collect dir so they can coexist
+# with the stable install on the same machine without the singleton
+# enforcement killing each other. Set TRIBEWATCH_BUILD_DEV=1 in the
+# build env (build.py does this when --iss installer-dev.iss is passed)
+# and the produced bundle will be `dist/TribeWatch-Dev/TribeWatch-Dev.exe`.
+_is_dev_build = os.environ.get('TRIBEWATCH_BUILD_DEV', '').lower() in ('1', 'true', 'yes')
+_exe_name = 'TribeWatch-Dev' if _is_dev_build else 'TribeWatch'
+
 # Read version from tribewatch/__init__.py (single source of truth)
 _version_match = re.search(
     r'__version__\s*=\s*["\']([^"\']+)["\']',
@@ -83,7 +91,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='TribeWatch',
+    name=_exe_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -101,5 +109,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='TribeWatch',
+    name=_exe_name,
 )
