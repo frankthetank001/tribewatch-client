@@ -19,7 +19,6 @@ def show_action_dialog(
     title: str,
     message: str,
     buttons: Sequence[tuple[str, str]],
-    *,
     default: str = "",
     fullscreen_backdrop: bool = True,
 ) -> str:
