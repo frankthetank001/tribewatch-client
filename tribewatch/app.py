@@ -894,30 +894,50 @@ class TribeWatchApp:
         from tribewatch.capture import focus_window, is_window_foreground, send_key
 
         check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
+        log.info(
+            "Tribe log refresh: ENTER (manual=%s, paused=%s, log_visible=%s, active_play=%s, check_wait=%s)",
+            manual, self._paused, self._log_header_visible, self._active_play, check_wait,
+        )
 
         if not manual:
             if self._paused or not self._log_header_visible:
+                log.info(
+                    "Tribe log refresh: gated out (paused=%s, log_visible=%s)",
+                    self._paused, self._log_header_visible,
+                )
                 return False
             if self._active_play:
-                log.debug("Tribe log refresh: skipped — active play detected")
+                log.info("Tribe log refresh: gated out (active_play)")
                 return False
 
         window_title = self.config.general.window_title
         if not window_title:
+            log.info("Tribe log refresh: no window_title configured, skipping")
             return False
 
         if not is_window_foreground(window_title):
-            if focus_window(window_title):
-                log.info("Tribe log refresh: focused ARK before sending keys")
-                await asyncio.sleep(0.5)
-            else:
-                log.debug("Tribe log refresh: could not focus ARK, skipping cycle")
-                return False
+            # Best-effort focus. SetForegroundWindow returns False against
+            # fullscreen-exclusive ARK, but PostMessage still delivers
+            # key events to the hwnd, so don't bail out on a False here —
+            # the reconnect sequence relies on the same trick.
+            focused = focus_window(window_title)
+            log.info(
+                "Tribe log refresh: focus_window returned %s (proceeding either way)",
+                focused,
+            )
+            await asyncio.sleep(0.5)
+        else:
+            log.info("Tribe log refresh: ARK already foreground")
 
         try:
             log.info("Tribe log refresh: pressing Esc (manual=%s)", manual)
-            send_key(window_title, "escape")
+            sent = send_key(window_title, "escape")
+            log.info("Tribe log refresh: Esc send_key returned %s; waiting %ss", sent, check_wait)
             await asyncio.sleep(check_wait)
+            log.info(
+                "Tribe log refresh: post-Esc state log_visible=%s",
+                self._log_header_visible,
+            )
 
             if self._log_header_visible:
                 log.warning(
@@ -1035,16 +1055,15 @@ class TribeWatchApp:
             window_title = self.config.general.window_title
             from tribewatch.capture import focus_window, is_window_foreground, send_key
 
-            # Try to grab focus before sending keys. The user is AFK by
-            # definition here (10 min of static screen) so focus-stealing
-            # is fine. Skip the recovery cycle if we can't acquire focus.
+            # Best-effort focus before sending keys. The user is AFK by
+            # definition here (10 min of static screen). Don't bail on a
+            # False return — fullscreen-exclusive ARK makes
+            # SetForegroundWindow report failure even though PostMessage
+            # still reaches the hwnd.
             if not is_window_foreground(window_title):
-                if focus_window(window_title):
-                    log.info("Idle recovery: focused ARK before sending keys")
-                    await asyncio.sleep(0.5)
-                else:
-                    log.debug("Idle recovery: could not focus ARK, skipping")
-                    continue
+                focused = focus_window(window_title)
+                log.info("Idle recovery: focus_window returned %s (proceeding)", focused)
+                await asyncio.sleep(0.5)
 
             log.warning(
                 "Screen idle for %ds with tribe log closed — pressing L to reopen",

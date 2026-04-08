@@ -68,17 +68,32 @@ def focus_window(title: str) -> bool:
     Returns True if the window is now the foreground window.
     Uses the Alt-key trick to bypass Windows' foreground-lock restrictions.
     """
+    # Log the caller so we can tell which subsystem (refresh loop, idle
+    # monitor, reconnect sequence, setup, ...) is stealing focus.
+    import traceback as _tb
+    caller = ""
+    try:
+        stack = _tb.extract_stack(limit=3)
+        if len(stack) >= 2:
+            f = stack[-2]
+            caller = f"{f.filename.rsplit(chr(92), 1)[-1].rsplit('/', 1)[-1]}:{f.lineno} {f.name}"
+    except Exception:
+        pass
+    log.info("focus_window(%r) called from %s", title, caller)
+
     if not _IS_WIN32:
         return False
 
     hwnd = _find_window_by_title(title)
     if hwnd is None:
+        log.info("focus_window: window %r not found", title)
         return False
 
     user32 = ctypes.windll.user32  # type: ignore[attr-defined]
 
     # If already foreground, nothing to do
     if user32.GetForegroundWindow() == hwnd:
+        log.info("focus_window: %r already foreground", title)
         return True
 
     # SW_RESTORE (9) un-minimizes if needed
@@ -95,7 +110,9 @@ def focus_window(title: str) -> bool:
     user32.SetForegroundWindow(hwnd)
 
     # Verify focus was actually acquired
-    return user32.GetForegroundWindow() == hwnd
+    ok = user32.GetForegroundWindow() == hwnd
+    log.info("focus_window: SetForegroundWindow result for %r = %s", title, ok)
+    return ok
 
 
 # ---------------------------------------------------------------------------
