@@ -1245,6 +1245,71 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
 
 
 
+def _cmd_reset_calibration(config_path: Path) -> None:
+    """Clear manual calibration so resolution presets re-apply on next run."""
+    from tribewatch.config import client_config_path
+    cp = client_config_path(config_path)
+    if not cp.exists():
+        print(f"No config file found at {cp}")
+        return
+    import tomllib
+    import tomli_w
+    with open(cp, "rb") as f:
+        data = tomllib.load(f)
+    data.get("general", {}).pop("calibration_resolution", None)
+    for section in ("tribe_log", "parasaur", "tribe"):
+        data.get(section, {}).pop("bbox", None)
+    with open(cp, "wb") as f:
+        tomli_w.dump(data, f)
+    print(f"Calibration reset. Bboxes cleared from {cp}")
+    print("Run TribeWatch again — resolution presets will be auto-applied.")
+
+
+def _cmd_reset_all(config_path: Path) -> None:
+    """Delete client config, dedup state, calibration previews, and debug folder."""
+    from tribewatch.config import client_config_path
+    cp = client_config_path(config_path)
+    removed: list[Path] = []
+
+    if cp.exists():
+        cp.unlink()
+        removed.append(cp)
+
+    work_dir = cp.parent
+    for pattern in (
+        "tribewatch_state*.json",
+        "tribewatch_state*.json.tmp",
+        "tribewatch_calibration_preview.png",
+        "parasaur_calibration_preview.png",
+        "tribe_calibration_preview.png",
+    ):
+        for f in work_dir.glob(pattern):
+            try:
+                f.unlink()
+                removed.append(f)
+            except Exception:
+                pass
+
+    debug_dir = work_dir / "debug"
+    if debug_dir.exists():
+        for f in debug_dir.iterdir():
+            try:
+                f.unlink()
+            except Exception:
+                pass
+        try:
+            debug_dir.rmdir()
+            removed.append(debug_dir)
+        except Exception:
+            pass
+
+    print("Full reset complete. Removed:")
+    for p in removed:
+        print(f"  - {p}")
+    print()
+    print("Run TribeWatch again to start fresh — you'll go through OAuth and calibration again.")
+
+
 def main() -> None:
     _set_dpi_awareness()
     _set_console_title_and_icon()
@@ -1325,71 +1390,11 @@ def main() -> None:
             return
 
     if args.reset_calibration:
-        from tribewatch.config import client_config_path
-        cp = client_config_path(config_path)
-        if not cp.exists():
-            print(f"No config file found at {cp}")
-            return
-        import tomllib
-        import tomli_w
-        with open(cp, "rb") as f:
-            data = tomllib.load(f)
-        # Clear calibration_resolution so presets re-apply on next run
-        data.get("general", {}).pop("calibration_resolution", None)
-        # Clear manual bboxes
-        for section in ("tribe_log", "parasaur", "tribe"):
-            data.get(section, {}).pop("bbox", None)
-        with open(cp, "wb") as f:
-            tomli_w.dump(data, f)
-        print(f"Calibration reset. Bboxes cleared from {cp}")
-        print("Run TribeWatch again — resolution presets will be auto-applied.")
+        _cmd_reset_calibration(config_path)
         return
 
     if args.reset_all:
-        from tribewatch.config import client_config_path
-        cp = client_config_path(config_path)
-        removed: list[Path] = []
-
-        # Delete client config
-        if cp.exists():
-            cp.unlink()
-            removed.append(cp)
-
-        # Delete dedup state files and debug artifacts in the working dir
-        work_dir = cp.parent
-        for pattern in (
-            "tribewatch_state*.json",
-            "tribewatch_state*.json.tmp",
-            "tribewatch_calibration_preview.png",
-            "parasaur_calibration_preview.png",
-            "tribe_calibration_preview.png",
-        ):
-            for f in work_dir.glob(pattern):
-                try:
-                    f.unlink()
-                    removed.append(f)
-                except Exception:
-                    pass
-
-        # Delete debug folder contents
-        debug_dir = work_dir / "debug"
-        if debug_dir.exists():
-            for f in debug_dir.iterdir():
-                try:
-                    f.unlink()
-                except Exception:
-                    pass
-            try:
-                debug_dir.rmdir()
-                removed.append(debug_dir)
-            except Exception:
-                pass
-
-        print("Full reset complete. Removed:")
-        for p in removed:
-            print(f"  - {p}")
-        print()
-        print("Run TribeWatch again to start fresh — you'll go through OAuth and calibration again.")
+        _cmd_reset_all(config_path)
         return
 
     if args.calibrate:

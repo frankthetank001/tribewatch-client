@@ -25,6 +25,8 @@ def main() -> None:
         _cmd_calibrate_parasaur,
         _cmd_calibrate_tribe,
         _cmd_generate_config,
+        _cmd_reset_all,
+        _cmd_reset_calibration,
         _cmd_run_client,
         _cmd_setup,
         _cmd_test_discord,
@@ -80,6 +82,16 @@ def main() -> None:
         help="Calibrate tribe window capture region",
     )
     parser.add_argument(
+        "--reset-calibration",
+        action="store_true",
+        help="Reset screen regions to resolution defaults (discards manual calibration)",
+    )
+    parser.add_argument(
+        "--reset-all",
+        action="store_true",
+        help="Full reset: deletes client config, calibration, dedup state, and local caches",
+    )
+    parser.add_argument(
         "--test-ocr",
         action="store_true",
         help="Capture once, run OCR, print results, exit",
@@ -115,6 +127,14 @@ def main() -> None:
     # and a Start Menu "Setup" shortcut will coexist for the duration
     # of the wizard, leaving the user staring at two windows.
     ensure_single_instance()
+
+    if args.reset_calibration:
+        _cmd_reset_calibration(effective_path)
+        return
+
+    if args.reset_all:
+        _cmd_reset_all(effective_path)
+        return
 
     if args.setup:
         # _cmd_setup returns None on success / False on user cancel.
