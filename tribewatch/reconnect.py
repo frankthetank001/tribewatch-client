@@ -1002,11 +1002,38 @@ class ReconnectSequence:
                 candidates.append((cy, cx, text))
 
             if candidates:
-                # Pick the topmost candidate (first result row)
                 candidates.sort(key=lambda c: c[0])
-                _, cx, text = candidates[0]
-                log.info("Found server row text: %r at y=%d", text, candidates[0][0])
-                return (cx, candidates[0][0])
+
+                # Prefer a row whose text contains the server ID — this
+                # validates we're about to join the right server and not
+                # a stale/wrong result from the browser filter.
+                for cy, cx, text in candidates:
+                    if server_id in text or server_id in text.replace(" ", ""):
+                        log.info(
+                            "Validated server row: %r contains server_id %r (y=%d)",
+                            text, server_id, cy,
+                        )
+                        return (cx, cy)
+
+                # No row matched the server ID — if there's exactly one
+                # result it's probably just an OCR mismatch on the ID
+                # digits. Accept it with a warning.
+                if len(candidates) == 1:
+                    _, cx, text = candidates[0]
+                    log.warning(
+                        "Server row %r does not contain server_id %r "
+                        "— only one result, accepting anyway (y=%d)",
+                        text, server_id, candidates[0][0],
+                    )
+                    return (cx, candidates[0][0])
+
+                # Multiple results and none match — refuse to guess.
+                log.warning(
+                    "Multiple server rows (%d) and none contain server_id %r — "
+                    "refusing to click a potentially wrong server",
+                    len(candidates), server_id,
+                )
+                return None
 
         except Exception:
             log.debug("Failed to find server row", exc_info=True)
