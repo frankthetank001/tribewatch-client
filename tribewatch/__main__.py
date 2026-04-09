@@ -133,6 +133,17 @@ def _setup_logging(level: str) -> None:
     file_handler.setFormatter(fmt)
     root.addHandler(file_handler)
 
+    # In-memory ring buffer — latest 500 lines, retrievable via control cmd
+    from tribewatch.log_buffer import LogBufferHandler
+    global _log_buffer_handler
+    _log_buffer_handler = LogBufferHandler(capacity=500)
+    _log_buffer_handler.setLevel(logging.DEBUG)
+    _log_buffer_handler.setFormatter(fmt)
+    root.addHandler(_log_buffer_handler)
+
+
+_log_buffer_handler: Any = None
+
 
 def _cmd_generate_config(config_path: Path, mode: str = "client") -> None:
     from tribewatch.config import generate_default_config, save_config
@@ -705,6 +716,43 @@ def _cmd_run(config_path: Path, *, skip_unverified_setup: bool = False) -> None:
     _cmd_run_client(cfg, cp)
 
 
+async def _handle_log_dump(msg_id: str) -> None:
+    """Send the in-memory log buffer to the server via relay."""
+    handler = _log_buffer_handler
+    if handler is None:
+        return
+    lines = handler.get_lines()
+    relay = getattr(app, "_relay", None) if "app" in dir() else None
+    # _handle_log_dump is called from inside _run_client where `app` is
+    # captured by the closure that calls us. Traverse the call stack to
+    # find the relay.  Simplest: use the global _log_buffer_handler and
+    # look up the relay from the running _on_control closure.
+    # Since _on_control is a closure over `app`, `relay` lives there.
+    # We'll receive it via a module-level ref set at relay creation time.
+    relay_ref = _active_relay
+    if relay_ref is not None:
+        await relay_ref.send_log_dump(lines, msg_id=msg_id)
+
+
+def _toggle_log_stream() -> None:
+    """Toggle real-time log streaming through the relay WS."""
+    handler = _log_buffer_handler
+    relay_ref = _active_relay
+    if handler is None or relay_ref is None:
+        return
+    if handler.streaming:
+        handler.stop_stream()
+        logging.getLogger(__name__).info("Log streaming stopped")
+    else:
+        handler.start_stream(relay_ref.send_log_line)
+        logging.getLogger(__name__).info("Log streaming started")
+
+
+# Module-level reference to the active relay, set when the relay is created
+# so _handle_log_dump / _toggle_log_stream can reach it from control cmds.
+_active_relay: Any = None
+
+
 async def _handle_screenshot(app: Any, msg_id: str) -> None:
     """Capture a full-window screenshot, JPEG-encode, and send via relay."""
     import base64
@@ -1143,6 +1191,10 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             _handle_reconnect(app, use_browser=True)
         elif command == "reconnect_cancel":
             asyncio.create_task(_handle_reconnect_cancel(app))
+        elif command == "logs":
+            asyncio.create_task(_handle_log_dump(msg_id))
+        elif command == "stream_logs":
+            _toggle_log_stream()
         elif command == "restart":
             # In-process soft restart — flag the run loop and stop the
             # current app. The wrapping `while _restart_requested[...]`
@@ -1256,6 +1308,8 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
                 on_auth_expired=_on_auth_expired,
                 on_tribe_unknown=_on_tribe_unknown,
             )
+            global _active_relay
+            _active_relay = relay
             app = TribeWatchApp(cfg, relay=relay)
             app._auto_reconnect_cb = lambda: _handle_reconnect(app, auto=True)
 
