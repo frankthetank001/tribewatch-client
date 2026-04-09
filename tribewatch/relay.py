@@ -352,6 +352,31 @@ class ServerRelay:
         except Exception:
             log.debug("Failed to send tribe_window_lost", exc_info=True)
 
+    async def send_log_dump(self, lines: list[str], msg_id: str = "") -> None:
+        """Send buffered log lines to the server."""
+        if not self._connected or not self._ws or self._ws.closed:
+            return
+        try:
+            await self._ws.send_json({
+                "type": "log_dump",
+                "msg_id": msg_id,
+                "lines": lines,
+            })
+        except Exception:
+            log.debug("Failed to send log dump", exc_info=True)
+
+    async def send_log_line(self, line: str) -> None:
+        """Stream a single log line to the server (fire-and-forget)."""
+        if not self._connected or not self._ws or self._ws.closed:
+            return
+        try:
+            await self._ws.send_json({
+                "type": "log_line",
+                "line": line,
+            })
+        except Exception:
+            pass  # never let streaming break the app
+
     async def send_screenshot_response(self, msg_id: str, image_b64: str) -> None:
         """Send a screenshot response to the server (fire-and-forget)."""
         if not self._connected or not self._ws or self._ws.closed:

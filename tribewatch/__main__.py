@@ -133,6 +133,17 @@ def _setup_logging(level: str) -> None:
     file_handler.setFormatter(fmt)
     root.addHandler(file_handler)
 
+    # In-memory ring buffer — latest 500 lines, retrievable via control cmd
+    from tribewatch.log_buffer import LogBufferHandler
+    global _log_buffer_handler
+    _log_buffer_handler = LogBufferHandler(capacity=500)
+    _log_buffer_handler.setLevel(logging.DEBUG)
+    _log_buffer_handler.setFormatter(fmt)
+    root.addHandler(_log_buffer_handler)
+
+
+_log_buffer_handler: Any = None
+
 
 def _cmd_generate_config(config_path: Path, mode: str = "client") -> None:
     from tribewatch.config import generate_default_config, save_config
@@ -369,66 +380,20 @@ def _discover_tribe_name_win32(
                 save_config(cfg, config_path, mode=mode)
     else:
         if detected and not _tribe_names_match(saved, detected):
-            from tribewatch.overlay_ui import show_action_dialog
-            choice = show_action_dialog(
-                title,
-                (
-                    f"Tribe name mismatch.\n\n"
-                    f'Saved:      "{saved}"\n'
-                    f'Detected:  "{detected}"\n\n'
-                    f"Pick an action to take. The dashboard will open "
-                    f"so you can confirm the result."
-                ),
-                buttons=[
-                    ("Rename saved tribe", "rename"),
-                    ("Treat as new tribe", "new"),
-                    ("Keep original", "keep"),
-                ],
-                default="keep",
+            # Mismatch between saved config and what OCR sees. Don't
+            # prompt or change anything — the client connects with the
+            # saved name (which the server already knows). If the saved
+            # name genuinely isn't on the server, it will send a
+            # tribe_unknown message with the user's existing tribes and
+            # _handle_tribe_unknown will show a dialog backed by the
+            # server APIs. This avoids double-prompting and protects
+            # against OCR misreads overwriting a valid saved name.
+            log = logging.getLogger(__name__)
+            log.info(
+                "Tribe name mismatch: saved=%r detected=%r — "
+                "keeping saved name, deferring to server if needed",
+                saved, detected,
             )
-            if choice == "rename":
-                # Try a server-side rename of the saved tribe → detected.
-                # The client doesn't have a tribe_id at this point, so
-                # resolve it via the REST API by saved name.
-                client_token = getattr(cfg.server, "client_token", "")
-                if client_token:
-                    try:
-                        import asyncio as _asyncio
-                        from tribewatch import server_api as _sapi
-
-                        async def _do_rename():
-                            tid = await _sapi.find_tribe_id_by_name(
-                                cfg.server.server_url, client_token, name=saved,
-                            )
-                            if tid:
-                                await _sapi.rename_tribe(
-                                    cfg.server.server_url, client_token,
-                                    tribe_id=tid, new_name=detected,
-                                )
-                                logging.getLogger(__name__).info(
-                                    "Server-side rename %r -> %r (tribe_id=%d) ok",
-                                    saved, detected, tid,
-                                )
-                            else:
-                                logging.getLogger(__name__).warning(
-                                    "Server-side rename: could not resolve "
-                                    "tribe_id for %r", saved,
-                                )
-                        _asyncio.run(_do_rename())
-                    except Exception:
-                        logging.getLogger(__name__).exception(
-                            "Server-side rename failed; opening dashboard anyway"
-                        )
-                cfg.tribe.tribe_name = detected
-                save_config(cfg, config_path, mode=mode)
-                _open_dashboard_for_tribe(cfg.server.server_url, detected)
-            elif choice == "new":
-                cfg.tribe.tribe_name = detected
-                save_config(cfg, config_path, mode=mode)
-                _open_dashboard_for_tribe(cfg.server.server_url, detected)
-            else:
-                # keep / closed: keep saved name unchanged.
-                pass
 
 
 def _win32_input_box(prompt: str, title: str) -> str:
@@ -501,18 +466,8 @@ def _discover_tribe_name_console(
                 print("No tribe name entered, skipping.")
     else:
         if detected and not _tribe_names_match(saved, detected):
-            print(f'\nSaved tribe:  "{saved}"')
-            print(f'Detected:     "{detected}"')
-            print("  [r]ename — adopt detected name (sync with server via dashboard)")
-            print("  [n]ew    — treat detected as a new tribe")
-            print("  [k]eep   — keep saved name (default)")
-            answer = input("Choice [r/n/K]: ").strip().lower()
-            if answer in ("r", "rename", "n", "new"):
-                cfg.tribe.tribe_name = detected
-                save_config(cfg, config_path, mode=mode)
-                print(f'Tribe name updated: "{detected}"')
-            else:
-                print(f'Keeping saved name: "{saved}"')
+            print(f'\nTribe name mismatch: saved="{saved}", detected="{detected}"')
+            print("Keeping saved name; server will prompt if needed.")
 
     print()
 
@@ -703,6 +658,43 @@ def _cmd_run(config_path: Path, *, skip_unverified_setup: bool = False) -> None:
         _discover_and_confirm_tribe_name(cfg, cp, mode="client")
 
     _cmd_run_client(cfg, cp)
+
+
+async def _handle_log_dump(msg_id: str) -> None:
+    """Send the in-memory log buffer to the server via relay."""
+    handler = _log_buffer_handler
+    if handler is None:
+        return
+    lines = handler.get_lines()
+    relay = getattr(app, "_relay", None) if "app" in dir() else None
+    # _handle_log_dump is called from inside _run_client where `app` is
+    # captured by the closure that calls us. Traverse the call stack to
+    # find the relay.  Simplest: use the global _log_buffer_handler and
+    # look up the relay from the running _on_control closure.
+    # Since _on_control is a closure over `app`, `relay` lives there.
+    # We'll receive it via a module-level ref set at relay creation time.
+    relay_ref = _active_relay
+    if relay_ref is not None:
+        await relay_ref.send_log_dump(lines, msg_id=msg_id)
+
+
+def _toggle_log_stream() -> None:
+    """Toggle real-time log streaming through the relay WS."""
+    handler = _log_buffer_handler
+    relay_ref = _active_relay
+    if handler is None or relay_ref is None:
+        return
+    if handler.streaming:
+        handler.stop_stream()
+        logging.getLogger(__name__).info("Log streaming stopped")
+    else:
+        handler.start_stream(relay_ref.send_log_line)
+        logging.getLogger(__name__).info("Log streaming started")
+
+
+# Module-level reference to the active relay, set when the relay is created
+# so _handle_log_dump / _toggle_log_stream can reach it from control cmds.
+_active_relay: Any = None
 
 
 async def _handle_screenshot(app: Any, msg_id: str) -> None:
@@ -1143,6 +1135,10 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             _handle_reconnect(app, use_browser=True)
         elif command == "reconnect_cancel":
             asyncio.create_task(_handle_reconnect_cancel(app))
+        elif command == "logs":
+            asyncio.create_task(_handle_log_dump(msg_id))
+        elif command == "stream_logs":
+            _toggle_log_stream()
         elif command == "restart":
             # In-process soft restart — flag the run loop and stop the
             # current app. The wrapping `while _restart_requested[...]`
@@ -1256,6 +1252,8 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
                 on_auth_expired=_on_auth_expired,
                 on_tribe_unknown=_on_tribe_unknown,
             )
+            global _active_relay
+            _active_relay = relay
             app = TribeWatchApp(cfg, relay=relay)
             app._auto_reconnect_cb = lambda: _handle_reconnect(app, auto=True)
 

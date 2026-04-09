@@ -31,7 +31,7 @@ _LAUNCH_TIMEOUT = 180  # 3 min to detect game window
 _TITLE_TIMEOUT = 180   # 3 min to find title screen text
 _LOAD_TIMEOUT = 180    # 3 min for game to load after clicking join
 _BROWSER_TIMEOUT = 60  # 1 min for server browser UI elements
-_POLL_INTERVAL = 5     # seconds between polls
+_POLL_INTERVAL = 2     # seconds between polls (was 5 — faster detection)
 _TRIBE_LOG_DELAY = 30  # seconds to wait before opening tribe log
 _KILL_TIMEOUT = 30     # seconds to wait for process to exit
 _KILL_STEAM_DELAY = 3  # seconds to let Steam register game exit
@@ -489,7 +489,7 @@ class ReconnectSequence:
             )
 
             # Verify the click worked — wait and confirm the button is gone.
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
             still_on_title = False
             capture_ok = False
             for _verify in range(3):
@@ -583,6 +583,14 @@ class ReconnectSequence:
             join_last = self._find_join_button(img)
             if join_last is not None:
                 consecutive_clear = 0
+                await self._report(
+                    "clicking_join",
+                    f"JOIN LAST SESSION still visible at ({join_last[0]}, {join_last[1]}) — clicking",
+                )
+                focus_window(self._window_title)
+                await asyncio.sleep(0.3)
+                send_click(self._window_title, join_last[0], join_last[1])
+                await asyncio.sleep(1)
                 continue
 
             # --- Check for any standalone JOIN button ---
@@ -598,7 +606,7 @@ class ReconnectSequence:
                 focus_window(self._window_title)
                 await asyncio.sleep(0.3)
                 send_click(self._window_title, extra_join[0], extra_join[1])
-                await asyncio.sleep(3)
+                await asyncio.sleep(1)
                 continue
 
             # --- Check for main menu (JOIN GAME without a JOIN button) ---
@@ -766,8 +774,17 @@ class ReconnectSequence:
                 return "retry"
 
             # Still on title screen?
-            if self._find_join_button(img) is not None:
+            join_last = self._find_join_button(img)
+            if join_last is not None:
                 consecutive_clear = 0
+                await self._report(
+                    "clicking_join_browser",
+                    f"JOIN LAST SESSION still visible at ({join_last[0]}, {join_last[1]}) — clicking",
+                )
+                focus_window(self._window_title)
+                await asyncio.sleep(0.3)
+                send_click(self._window_title, join_last[0], join_last[1])
+                await asyncio.sleep(3)
                 continue
 
             # Any standalone JOIN button (event dialogs, confirmations)
@@ -786,8 +803,8 @@ class ReconnectSequence:
 
             # Main menu?
             if self._find_text_coords(img, "JOIN GAME") is not None:
-                consecutive_clear = 0
-                continue
+                await self._report("failed", "Landed on main menu — retrying")
+                return "retry"
 
             # No UI elements — game might be loaded
             consecutive_clear += 1
@@ -985,11 +1002,38 @@ class ReconnectSequence:
                 candidates.append((cy, cx, text))
 
             if candidates:
-                # Pick the topmost candidate (first result row)
                 candidates.sort(key=lambda c: c[0])
-                _, cx, text = candidates[0]
-                log.info("Found server row text: %r at y=%d", text, candidates[0][0])
-                return (cx, candidates[0][0])
+
+                # Prefer a row whose text contains the server ID — this
+                # validates we're about to join the right server and not
+                # a stale/wrong result from the browser filter.
+                for cy, cx, text in candidates:
+                    if server_id in text or server_id in text.replace(" ", ""):
+                        log.info(
+                            "Validated server row: %r contains server_id %r (y=%d)",
+                            text, server_id, cy,
+                        )
+                        return (cx, cy)
+
+                # No row matched the server ID — if there's exactly one
+                # result it's probably just an OCR mismatch on the ID
+                # digits. Accept it with a warning.
+                if len(candidates) == 1:
+                    _, cx, text = candidates[0]
+                    log.warning(
+                        "Server row %r does not contain server_id %r "
+                        "— only one result, accepting anyway (y=%d)",
+                        text, server_id, candidates[0][0],
+                    )
+                    return (cx, candidates[0][0])
+
+                # Multiple results and none match — refuse to guess.
+                log.warning(
+                    "Multiple server rows (%d) and none contain server_id %r — "
+                    "refusing to click a potentially wrong server",
+                    len(candidates), server_id,
+                )
+                return None
 
         except Exception:
             log.debug("Failed to find server row", exc_info=True)

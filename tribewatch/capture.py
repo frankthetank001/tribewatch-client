@@ -67,40 +67,27 @@ def focus_window(title: str) -> bool:
 
     Returns True if the window is now the foreground window.
     Uses the Alt-key trick to bypass Windows' foreground-lock restrictions.
-    """
-    # Log the caller so we can tell which subsystem (refresh loop, idle
-    # monitor, reconnect sequence, setup, ...) is stealing focus.
-    import traceback as _tb
-    caller = ""
-    try:
-        stack = _tb.extract_stack(limit=3)
-        if len(stack) >= 2:
-            f = stack[-2]
-            caller = f"{f.filename.rsplit(chr(92), 1)[-1].rsplit('/', 1)[-1]}:{f.lineno} {f.name}"
-    except Exception:
-        pass
-    log.info("focus_window(%r) called from %s", title, caller)
 
+    Note: PostMessage-based callers (send_key / send_click) do NOT need
+    this — they deliver to the hwnd directly. Only callers that use
+    pyautogui (SendInput) need real focus. The refresh loop and idle
+    monitor should NOT call this.
+    """
     if not _IS_WIN32:
         return False
 
     hwnd = _find_window_by_title(title)
     if hwnd is None:
-        log.info("focus_window: window %r not found", title)
+        log.debug("focus_window: window %r not found", title)
         return False
 
     user32 = ctypes.windll.user32  # type: ignore[attr-defined]
 
-    # If already foreground, nothing to do
     if user32.GetForegroundWindow() == hwnd:
-        log.info("focus_window: %r already foreground", title)
         return True
 
-    # SW_RESTORE (9) un-minimizes if needed
     user32.ShowWindow(hwnd, 9)
 
-    # The Alt-key trick: pressing and releasing Alt lets a background process
-    # call SetForegroundWindow successfully (bypasses the foreground lock).
     VK_MENU = 0x12
     KEYEVENTF_EXTENDEDKEY = 0x0001
     KEYEVENTF_KEYUP = 0x0002
@@ -108,11 +95,7 @@ def focus_window(title: str) -> bool:
     user32.keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
 
     user32.SetForegroundWindow(hwnd)
-
-    # Verify focus was actually acquired
-    ok = user32.GetForegroundWindow() == hwnd
-    log.info("focus_window: SetForegroundWindow result for %r = %s", title, ok)
-    return ok
+    return user32.GetForegroundWindow() == hwnd
 
 
 # ---------------------------------------------------------------------------

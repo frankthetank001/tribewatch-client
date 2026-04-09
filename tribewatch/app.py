@@ -899,7 +899,7 @@ class TribeWatchApp:
         the tribe log isn't currently visible or the user is mid-play.
         The periodic loop and idle-monitor still pass ``manual=False``.
         """
-        from tribewatch.capture import focus_window, is_window_foreground, send_key
+        from tribewatch.capture import send_key
 
         check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
         log.info(
@@ -922,20 +922,6 @@ class TribeWatchApp:
         if not window_title:
             log.info("Tribe log refresh: no window_title configured, skipping")
             return False
-
-        if not is_window_foreground(window_title):
-            # Best-effort focus. SetForegroundWindow returns False against
-            # fullscreen-exclusive ARK, but PostMessage still delivers
-            # key events to the hwnd, so don't bail out on a False here —
-            # the reconnect sequence relies on the same trick.
-            focused = focus_window(window_title)
-            log.info(
-                "Tribe log refresh: focus_window returned %s (proceeding either way)",
-                focused,
-            )
-            await asyncio.sleep(0.5)
-        else:
-            log.info("Tribe log refresh: ARK already foreground")
 
         try:
             log.info("Tribe log refresh: pressing Esc (manual=%s)", manual)
@@ -1021,7 +1007,9 @@ class TribeWatchApp:
         This avoids being invasive: if the user is actively playing (screen
         changing), we don't press L even if the tribe log is closed.
         """
-        IDLE_THRESHOLD = 10 * 60  # 10 minutes
+        # Use idle_alert_minutes from config so the overlay countdown and
+        # the actual recovery threshold stay in sync.
+        IDLE_THRESHOLD = self.config.alerts.idle_alert_minutes * 60
         _last_log_min = 0  # track last logged minute to avoid spam
 
         while self._running:
@@ -1061,17 +1049,7 @@ class TribeWatchApp:
             self._idle_recovery_attempted = True
 
             window_title = self.config.general.window_title
-            from tribewatch.capture import focus_window, is_window_foreground, send_key
-
-            # Best-effort focus before sending keys. The user is AFK by
-            # definition here (10 min of static screen). Don't bail on a
-            # False return — fullscreen-exclusive ARK makes
-            # SetForegroundWindow report failure even though PostMessage
-            # still reaches the hwnd.
-            if not is_window_foreground(window_title):
-                focused = focus_window(window_title)
-                log.info("Idle recovery: focus_window returned %s (proceeding)", focused)
-                await asyncio.sleep(0.5)
+            from tribewatch.capture import send_key
 
             log.warning(
                 "Screen idle for %ds with tribe log closed — pressing L to reopen",
