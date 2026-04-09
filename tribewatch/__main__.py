@@ -380,66 +380,20 @@ def _discover_tribe_name_win32(
                 save_config(cfg, config_path, mode=mode)
     else:
         if detected and not _tribe_names_match(saved, detected):
-            from tribewatch.overlay_ui import show_action_dialog
-            choice = show_action_dialog(
-                title,
-                (
-                    f"Tribe name mismatch.\n\n"
-                    f'Saved:      "{saved}"\n'
-                    f'Detected:  "{detected}"\n\n'
-                    f"Pick an action to take. The dashboard will open "
-                    f"so you can confirm the result."
-                ),
-                buttons=[
-                    ("Rename saved tribe", "rename"),
-                    ("Treat as new tribe", "new"),
-                    ("Keep original", "keep"),
-                ],
-                default="keep",
+            # Mismatch between saved config and what OCR sees. Don't
+            # prompt or change anything — the client connects with the
+            # saved name (which the server already knows). If the saved
+            # name genuinely isn't on the server, it will send a
+            # tribe_unknown message with the user's existing tribes and
+            # _handle_tribe_unknown will show a dialog backed by the
+            # server APIs. This avoids double-prompting and protects
+            # against OCR misreads overwriting a valid saved name.
+            log = logging.getLogger(__name__)
+            log.info(
+                "Tribe name mismatch: saved=%r detected=%r — "
+                "keeping saved name, deferring to server if needed",
+                saved, detected,
             )
-            if choice == "rename":
-                # Try a server-side rename of the saved tribe → detected.
-                # The client doesn't have a tribe_id at this point, so
-                # resolve it via the REST API by saved name.
-                client_token = getattr(cfg.server, "client_token", "")
-                if client_token:
-                    try:
-                        import asyncio as _asyncio
-                        from tribewatch import server_api as _sapi
-
-                        async def _do_rename():
-                            tid = await _sapi.find_tribe_id_by_name(
-                                cfg.server.server_url, client_token, name=saved,
-                            )
-                            if tid:
-                                await _sapi.rename_tribe(
-                                    cfg.server.server_url, client_token,
-                                    tribe_id=tid, new_name=detected,
-                                )
-                                logging.getLogger(__name__).info(
-                                    "Server-side rename %r -> %r (tribe_id=%d) ok",
-                                    saved, detected, tid,
-                                )
-                            else:
-                                logging.getLogger(__name__).warning(
-                                    "Server-side rename: could not resolve "
-                                    "tribe_id for %r", saved,
-                                )
-                        _asyncio.run(_do_rename())
-                    except Exception:
-                        logging.getLogger(__name__).exception(
-                            "Server-side rename failed; opening dashboard anyway"
-                        )
-                cfg.tribe.tribe_name = detected
-                save_config(cfg, config_path, mode=mode)
-                _open_dashboard_for_tribe(cfg.server.server_url, detected)
-            elif choice == "new":
-                cfg.tribe.tribe_name = detected
-                save_config(cfg, config_path, mode=mode)
-                _open_dashboard_for_tribe(cfg.server.server_url, detected)
-            else:
-                # keep / closed: keep saved name unchanged.
-                pass
 
 
 def _win32_input_box(prompt: str, title: str) -> str:
@@ -512,18 +466,8 @@ def _discover_tribe_name_console(
                 print("No tribe name entered, skipping.")
     else:
         if detected and not _tribe_names_match(saved, detected):
-            print(f'\nSaved tribe:  "{saved}"')
-            print(f'Detected:     "{detected}"')
-            print("  [r]ename — adopt detected name (sync with server via dashboard)")
-            print("  [n]ew    — treat detected as a new tribe")
-            print("  [k]eep   — keep saved name (default)")
-            answer = input("Choice [r/n/K]: ").strip().lower()
-            if answer in ("r", "rename", "n", "new"):
-                cfg.tribe.tribe_name = detected
-                save_config(cfg, config_path, mode=mode)
-                print(f'Tribe name updated: "{detected}"')
-            else:
-                print(f'Keeping saved name: "{saved}"')
+            print(f'\nTribe name mismatch: saved="{saved}", detected="{detected}"')
+            print("Keeping saved name; server will prompt if needed.")
 
     print()
 
