@@ -31,7 +31,7 @@ _LAUNCH_TIMEOUT = 180  # 3 min to detect game window
 _TITLE_TIMEOUT = 180   # 3 min to find title screen text
 _LOAD_TIMEOUT = 180    # 3 min for game to load after clicking join
 _BROWSER_TIMEOUT = 60  # 1 min for server browser UI elements
-_POLL_INTERVAL = 5     # seconds between polls
+_POLL_INTERVAL = 2     # seconds between polls (was 5 — faster detection)
 _TRIBE_LOG_DELAY = 30  # seconds to wait before opening tribe log
 _KILL_TIMEOUT = 30     # seconds to wait for process to exit
 _KILL_STEAM_DELAY = 3  # seconds to let Steam register game exit
@@ -489,7 +489,7 @@ class ReconnectSequence:
             )
 
             # Verify the click worked — wait and confirm the button is gone.
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
             still_on_title = False
             capture_ok = False
             for _verify in range(3):
@@ -590,7 +590,7 @@ class ReconnectSequence:
                 focus_window(self._window_title)
                 await asyncio.sleep(0.3)
                 send_click(self._window_title, join_last[0], join_last[1])
-                await asyncio.sleep(3)
+                await asyncio.sleep(1)
                 continue
 
             # --- Check for any standalone JOIN button ---
@@ -606,7 +606,7 @@ class ReconnectSequence:
                 focus_window(self._window_title)
                 await asyncio.sleep(0.3)
                 send_click(self._window_title, extra_join[0], extra_join[1])
-                await asyncio.sleep(3)
+                await asyncio.sleep(1)
                 continue
 
             # --- Check for main menu (JOIN GAME without a JOIN button) ---

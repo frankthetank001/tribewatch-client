@@ -1007,7 +1007,9 @@ class TribeWatchApp:
         This avoids being invasive: if the user is actively playing (screen
         changing), we don't press L even if the tribe log is closed.
         """
-        IDLE_THRESHOLD = 10 * 60  # 10 minutes
+        # Use idle_alert_minutes from config so the overlay countdown and
+        # the actual recovery threshold stay in sync.
+        IDLE_THRESHOLD = self.config.alerts.idle_alert_minutes * 60
         _last_log_min = 0  # track last logged minute to avoid spam
 
         while self._running:
