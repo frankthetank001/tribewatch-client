@@ -759,29 +759,26 @@ async def _handle_server_change(
 
     accepted = False
     try:
-        import ctypes
+        from tribewatch.overlay_ui import show_action_dialog
 
-        MB_YESNO = 0x04
-        MB_ICONWARNING = 0x30
-        MB_TOPMOST = 0x40000
-        IDYES = 6
-
-        result = await asyncio.get_event_loop().run_in_executor(
+        choice = await asyncio.get_event_loop().run_in_executor(
             None,
-            ctypes.windll.user32.MessageBoxW,
-            0,
+            show_action_dialog,
+            "TribeWatch \u2014 Server Change Detected",
             (
                 f"Server changed!\n\n"
                 f"Previous: {old_name}\n"
                 f"New: {new_name}\n\n"
-                f"Accept this server change and re-detect tribe name?\n"
-                f"(Monitoring is paused until you respond)"
+                f"Monitoring is paused until you respond."
             ),
-            "TribeWatch \u2014 Server Change Detected",
-            MB_YESNO | MB_ICONWARNING | MB_TOPMOST,
+            [
+                ("Accept and re-detect tribe", "accept"),
+                ("Decline (stay paused)", "decline"),
+            ],
+            "accept",
         )
 
-        if result == IDYES:
+        if choice == "accept":
             accepted = True
             from tribewatch.config import client_config_path
 
@@ -793,6 +790,7 @@ async def _handle_server_change(
     except Exception:
         log.exception("Server change handler failed")
     finally:
+        app._server_change_pending = False
         if accepted:
             app._server_id = new_id
             app._server_name = new_name
@@ -1272,6 +1270,9 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
                 log.debug("Overlay not available", exc_info=True)
 
             def _on_server_change(old_id, old_name, new_id, new_name):
+                if getattr(app, "_server_change_pending", False):
+                    return
+                app._server_change_pending = True
                 app._paused = True  # pause immediately (sync) before async handler
                 app._eos_last_query = 0  # force EOS refresh on next heartbeat
                 asyncio.create_task(
