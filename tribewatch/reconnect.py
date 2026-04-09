@@ -583,6 +583,14 @@ class ReconnectSequence:
             join_last = self._find_join_button(img)
             if join_last is not None:
                 consecutive_clear = 0
+                await self._report(
+                    "clicking_join",
+                    f"JOIN LAST SESSION still visible at ({join_last[0]}, {join_last[1]}) — clicking",
+                )
+                focus_window(self._window_title)
+                await asyncio.sleep(0.3)
+                send_click(self._window_title, join_last[0], join_last[1])
+                await asyncio.sleep(3)
                 continue
 
             # --- Check for any standalone JOIN button ---
@@ -766,8 +774,17 @@ class ReconnectSequence:
                 return "retry"
 
             # Still on title screen?
-            if self._find_join_button(img) is not None:
+            join_last = self._find_join_button(img)
+            if join_last is not None:
                 consecutive_clear = 0
+                await self._report(
+                    "clicking_join_browser",
+                    f"JOIN LAST SESSION still visible at ({join_last[0]}, {join_last[1]}) — clicking",
+                )
+                focus_window(self._window_title)
+                await asyncio.sleep(0.3)
+                send_click(self._window_title, join_last[0], join_last[1])
+                await asyncio.sleep(3)
                 continue
 
             # Any standalone JOIN button (event dialogs, confirmations)
@@ -786,8 +803,8 @@ class ReconnectSequence:
 
             # Main menu?
             if self._find_text_coords(img, "JOIN GAME") is not None:
-                consecutive_clear = 0
-                continue
+                await self._report("failed", "Landed on main menu — retrying")
+                return "retry"
 
             # No UI elements — game might be loaded
             consecutive_clear += 1
