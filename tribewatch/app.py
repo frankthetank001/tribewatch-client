@@ -1231,6 +1231,9 @@ class TribeWatchApp:
                 self._active_play = False
                 self._active_play_still_count = 0
         if self._active_play and not was_active:
+            if self._character_dead:
+                log.info("Character death state cleared — active play detected")
+                self._character_dead = False
             log.info("Active play detected (%.1f%% change) — pausing tribe log & parasaur OCR",
                      self._screen_change_pct)
             # Mark tribe log as not visible — we're no longer monitoring it
