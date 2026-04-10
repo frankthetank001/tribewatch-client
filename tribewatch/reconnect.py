@@ -9,8 +9,9 @@ import io
 import logging
 import re
 import subprocess
+import time as _time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 from tribewatch.capture import _find_window_by_title, _grab_window, focus_window, send_click, send_key
 
@@ -77,6 +78,8 @@ class ReconnectSequence:
         self._attempt_count: int = 0
         self._initial_use_browser: bool = use_browser
         self._death_detected: bool = False
+        self._on_attempt_done: Callable | None = None  # (attempt, outcome, reason, screenshot_b64) -> ...
+        self._attempt_start: float = 0
 
         # Detect launcher (steam / epic)
         from tribewatch.server_id import detect_launcher
@@ -394,6 +397,16 @@ class ReconnectSequence:
 
     # --- Main flow routing ---
 
+    def _fire_attempt_done(self, attempt: int, outcome: str, reason: str = "") -> None:
+        """Notify the caller that one attempt has finished."""
+        screenshot_b64 = self._failure_screenshot_b64 if outcome != "success" else ""
+        method = "browser" if self._use_browser else "direct"
+        if self._on_attempt_done:
+            try:
+                self._on_attempt_done(attempt, outcome, reason, screenshot_b64, method)
+            except Exception:
+                log.debug("on_attempt_done callback error", exc_info=True)
+
     async def _run(self) -> None:
         """Execute the full reconnect sequence, retrying with exponential backoff."""
         attempt = 0
@@ -402,6 +415,9 @@ class ReconnectSequence:
         while True:
             attempt += 1
             self._attempt_count = attempt
+            self._failure_reason = ""
+            self._failure_screenshot_b64 = ""
+            self._attempt_start = _time.monotonic()
             try:
                 if self._use_browser:
                     result = await self._do_browser_reconnect()
@@ -410,6 +426,7 @@ class ReconnectSequence:
 
                 if result == "success":
                     self._succeeded = True
+                    self._fire_attempt_done(attempt, "success")
                     return
             except _ReconnectAbort:
                 pass
@@ -420,7 +437,10 @@ class ReconnectSequence:
             # Death screen detected — no point retrying
             if self._death_detected:
                 log.warning("Character dead — aborting reconnect sequence")
+                self._fire_attempt_done(attempt, "failed", self._failure_reason or "Character is dead")
                 return
+
+            self._fire_attempt_done(attempt, "failed", self._failure_reason)
 
             # Wait with exponential backoff before retrying
             await self._report(
