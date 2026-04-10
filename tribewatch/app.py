@@ -1125,6 +1125,12 @@ class TribeWatchApp:
             if idle_duration < IDLE_THRESHOLD or self._idle_recovery_attempted:
                 continue
 
+            # Check for death screen before attempting any recovery
+            if await self._is_death_screen():
+                self._handle_character_death()
+                self._idle_recovery_attempted = True
+                continue
+
             self._idle_recovery_attempted = True
 
             window_title = self.config.general.window_title
