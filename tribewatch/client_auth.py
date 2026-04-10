@@ -71,6 +71,7 @@ async def obtain_client_token_device(
         url = f"https://{url}"
 
     # Step 1: Request device code from server
+    log.info("Requesting device code from %s", url)
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(
@@ -331,11 +332,12 @@ async def obtain_client_token_interactive(
         )
         if token:
             return token
+        log.info("Device flow returned no token, trying localhost callback")
     except Exception:
-        log.debug("Device flow failed, falling back to localhost callback", exc_info=True)
+        log.info("Device flow unavailable, trying localhost callback", exc_info=True)
 
     # 2. Try localhost callback (opens browser on same machine)
-    log.info("Trying localhost callback flow...")
+    print("\nFalling back to browser authentication...")
     token = await _localhost_callback_flow(
         url, local_port=local_port, timeout=timeout, tribe_hint=tribe_hint,
     )
