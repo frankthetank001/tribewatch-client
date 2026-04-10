@@ -350,13 +350,13 @@ class TribeWatchApp:
     async def _is_death_screen(self) -> bool:
         """Return True if the ARK death/respawn screen is visible.
 
-        Looks for "CREATE NEW SURVIVOR" or "RESPAWN" in the centre of
-        the screen — these only appear when the character is dead.
+        Uses RapidOCR (same engine as reconnect sequence) to scan the
+        full ARK window for "CREATE NEW SURVIVOR" or "RESPAWN" text.
         """
         try:
-            import ctypes
             from tribewatch.capture import _IS_WIN32, _grab_window
-            from tribewatch.ocr_engine import recognize
+            from tribewatch.ocr_engine import _get_rapidocr_engine
+            import numpy as np
 
             if not _IS_WIN32:
                 return False
@@ -364,28 +364,22 @@ class TribeWatchApp:
             if not hwnd:
                 return False
 
-            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-            rect = (ctypes.c_long * 4)()
-            user32.GetClientRect(hwnd, ctypes.byref(rect))
-            width = rect[2]
-            height = rect[3]
-            if width <= 0 or height <= 0:
-                return False
-
-            # Full window capture — death screen elements can be anywhere
             img = _grab_window(hwnd, bbox=None)
             if img is None:
                 return False
 
-            engine = getattr(self.config.tribe_log, "ocr_engine", "winrt") or "winrt"
-            text = await recognize(img, engine=engine, retries=0, preprocess=False)
-            if not text:
+            engine = _get_rapidocr_engine()
+            result, _ = engine(np.array(img))
+            if result is None:
                 return False
-            upper = text.upper()
-            for needle in ("CREATE NEW SURVIVOR", "RESPAWN"):
-                if needle in upper:
-                    log.warning("Death screen detected via OCR keyword %r", needle)
-                    return True
+
+            for detection in result:
+                _, text, _ = detection
+                upper = text.upper()
+                for needle in ("CREATE NEW SURVIVOR", "RESPAWN"):
+                    if needle in upper:
+                        log.warning("Death screen detected via OCR keyword %r in %r", needle, text)
+                        return True
             return False
         except Exception:
             log.debug("Death screen OCR check failed", exc_info=True)
