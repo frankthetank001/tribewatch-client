@@ -32,6 +32,7 @@ class ServerRelay:
         on_config_update: Callable[[str, dict, str], Any] | None = None,
         on_auth_expired: Callable[[], Any] | None = None,
         on_tribe_unknown: Callable[[dict], Any] | None = None,
+        on_connect: Callable[[], Any] | None = None,
     ) -> None:
         self._server_url = self._normalize_url(server_url)
         self._auth_token = auth_token
@@ -41,6 +42,7 @@ class ServerRelay:
         self._on_control = on_control  # (command, msg_id) -> ...
         self._on_config_update = on_config_update  # (section, data, msg_id) -> ...
         self._on_tribe_unknown = on_tribe_unknown  # (msg) -> ...
+        self._on_connect = on_connect  # () -> ...
 
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -174,6 +176,15 @@ class ServerRelay:
                 await self._ws.send_json({"type": "config", "data": self._pending_config})
             except Exception:
                 log.debug("Failed to send config on connect", exc_info=True)
+
+        # Fire on-connect callback (e.g. send reconnect history)
+        if self._on_connect:
+            try:
+                result = self._on_connect()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                log.debug("on_connect callback error", exc_info=True)
 
         # Flush buffered events
         await self._flush_buffer()
@@ -389,6 +400,24 @@ class ServerRelay:
             })
         except Exception:
             log.debug("Failed to send screenshot response", exc_info=True)
+
+    async def send_reconnect_record(self, record: dict) -> None:
+        """Send a completed reconnect audit record to the server."""
+        if not self._connected or not self._ws or self._ws.closed:
+            return
+        try:
+            await self._ws.send_json({"type": "reconnect_record", "record": record})
+        except Exception:
+            log.debug("Failed to send reconnect record", exc_info=True)
+
+    async def send_reconnect_history(self, records: list[dict]) -> None:
+        """Send recent reconnect history to the server (e.g. on connect)."""
+        if not self._connected or not self._ws or self._ws.closed:
+            return
+        try:
+            await self._ws.send_json({"type": "reconnect_history", "records": records})
+        except Exception:
+            log.debug("Failed to send reconnect history", exc_info=True)
 
     async def send_reconnect_status(
         self, stage: str, message: str, image: str = "", auto: bool = False,

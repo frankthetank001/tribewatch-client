@@ -242,8 +242,12 @@ class TribeWatchApp:
         if cal_res and len(cal_res) == 2 and all(isinstance(v, int) and v > 0 for v in cal_res):
             self._last_game_resolution = (cal_res[0], cal_res[1])
 
-    def _maybe_auto_reconnect(self) -> None:
+    def _maybe_auto_reconnect(self, trigger: str = "unknown") -> None:
         """Trigger the auto-reconnect callback iff the feature is enabled.
+
+        *trigger* identifies why the reconnect was initiated, e.g.
+        ``"tribe_log_refresh_stuck"``, ``"tribe_log_reopen_failed"``,
+        ``"idle_recovery_failed"``.
 
         Gated by config.reconnect.enabled — set to False to opt out of
         the automatic ARK relaunch / server rejoin behaviour. Manual
@@ -261,7 +265,7 @@ class TribeWatchApp:
             log.info("Auto-reconnect skipped: disabled in config")
             return
         if self._auto_reconnect_cb:
-            self._auto_reconnect_cb()
+            self._auto_reconnect_cb(trigger)
 
     async def _is_esc_menu_open(self) -> bool:
         """Return True if ARK's in-game pause menu is currently visible.
@@ -937,7 +941,7 @@ class TribeWatchApp:
                 log.warning(
                     "Tribe log refresh: tribe log still visible after Esc — triggering auto-reconnect"
                 )
-                self._maybe_auto_reconnect()
+                self._maybe_auto_reconnect("tribe_log_refresh_stuck")
                 return False
 
             # Esc may have opened the pause menu (either because the log
@@ -974,7 +978,7 @@ class TribeWatchApp:
                 "Tribe log refresh: tribe log NOT visible after %d L attempts — triggering auto-reconnect",
                 _L_ATTEMPTS,
             )
-            self._maybe_auto_reconnect()
+            self._maybe_auto_reconnect("tribe_log_reopen_failed")
             return False
         except Exception:
             log.debug("Tribe log refresh failed", exc_info=True)
@@ -1076,7 +1080,7 @@ class TribeWatchApp:
 
             # Recovery failed — trigger auto-reconnect
             log.warning("Recovery failed — triggering auto-reconnect")
-            self._maybe_auto_reconnect()
+            self._maybe_auto_reconnect("idle_recovery_failed")
 
     async def _capture_cycle(self) -> None:
         """Single capture → OCR → parse → dedup → dispatch cycle."""

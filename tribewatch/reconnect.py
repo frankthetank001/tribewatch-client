@@ -72,6 +72,10 @@ class ReconnectSequence:
         self._use_browser = use_browser
         self._task: asyncio.Task | None = None
         self._succeeded: bool = False
+        self._failure_reason: str = ""
+        self._failure_screenshot_b64: str = ""
+        self._attempt_count: int = 0
+        self._initial_use_browser: bool = use_browser
 
         # Detect launcher (steam / epic)
         from tribewatch.server_id import detect_launcher
@@ -85,6 +89,18 @@ class ReconnectSequence:
     @property
     def succeeded(self) -> bool:
         return self._succeeded
+
+    @property
+    def failure_reason(self) -> str:
+        return self._failure_reason
+
+    @property
+    def attempt_count(self) -> int:
+        return self._attempt_count
+
+    @property
+    def switched_to_browser(self) -> bool:
+        return self._use_browser and not self._initial_use_browser
 
     def start(self) -> asyncio.Task:
         """Start the reconnect sequence as a background task."""
@@ -124,10 +140,19 @@ class ReconnectSequence:
             log.debug("Failed to capture reconnect screenshot", exc_info=True)
             return ""
 
+    @property
+    def failure_screenshot_b64(self) -> str:
+        """The screenshot captured at the last failure stage."""
+        return self._failure_screenshot_b64
+
     async def _report(self, stage: str, message: str) -> None:
         """Report reconnect progress to the server, with a screenshot."""
         log.info("Reconnect [%s]: %s", stage, message)
+        if stage == "failed":
+            self._failure_reason = message
         image = self._capture_screenshot_b64()
+        if stage == "failed" and image:
+            self._failure_screenshot_b64 = image
         try:
             await self._relay.send_reconnect_status(stage, message, image=image, auto=self._auto)
         except Exception:
@@ -371,6 +396,7 @@ class ReconnectSequence:
 
         while True:
             attempt += 1
+            self._attempt_count = attempt
             try:
                 if self._use_browser:
                     result = await self._do_browser_reconnect()
@@ -584,7 +610,7 @@ class ReconnectSequence:
             if join_last is not None:
                 consecutive_clear = 0
                 await self._report(
-                    "clicking_join",
+                    "waiting_load",
                     f"JOIN LAST SESSION still visible at ({join_last[0]}, {join_last[1]}) — clicking",
                 )
                 focus_window(self._window_title)
@@ -600,8 +626,8 @@ class ReconnectSequence:
             if extra_join is not None:
                 consecutive_clear = 0
                 await self._report(
-                    "clicking_join",
-                    f"JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking",
+                    "waiting_load",
+                    f"Extra JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking",
                 )
                 focus_window(self._window_title)
                 await asyncio.sleep(0.3)
@@ -778,7 +804,7 @@ class ReconnectSequence:
             if join_last is not None:
                 consecutive_clear = 0
                 await self._report(
-                    "clicking_join_browser",
+                    "waiting_load",
                     f"JOIN LAST SESSION still visible at ({join_last[0]}, {join_last[1]}) — clicking",
                 )
                 focus_window(self._window_title)
@@ -792,8 +818,8 @@ class ReconnectSequence:
             if extra_join is not None:
                 consecutive_clear = 0
                 await self._report(
-                    "clicking_join_browser",
-                    f"JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking",
+                    "waiting_load",
+                    f"Extra JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking",
                 )
                 focus_window(self._window_title)
                 await asyncio.sleep(0.3)
