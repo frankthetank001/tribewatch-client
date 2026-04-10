@@ -140,6 +140,46 @@ class ReconnectRecord:
             log.debug("Failed to save reconnect record", exc_info=True)
 
 
+def load_recent_records(limit: int = 50, include_images: bool = False) -> list[dict]:
+    """Load the most recent records from the JSONL file.
+
+    If *include_images* is True, re-reads screenshot files from disk
+    and embeds them as base64 for relay to the server.
+    """
+    if not _HISTORY_FILE.exists():
+        return []
+    try:
+        import base64 as _b64
+
+        lines = _HISTORY_FILE.read_text(encoding="utf-8").splitlines()
+        records = []
+        for line in lines[-limit:]:
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if include_images:
+                for key, b64_key in [
+                    ("screenshot_start", "screenshot_start_b64"),
+                    ("screenshot_end", "screenshot_end_b64"),
+                ]:
+                    path = r.get(key, "")
+                    if path and Path(path).exists():
+                        try:
+                            r[b64_key] = _b64.b64encode(
+                                Path(path).read_bytes()
+                            ).decode("ascii")
+                        except Exception:
+                            r[b64_key] = ""
+                    else:
+                        r.setdefault(b64_key, "")
+            records.append(r)
+        return records
+    except Exception:
+        log.debug("Failed to load reconnect history", exc_info=True)
+        return []
+
+
 def _prune_history() -> None:
     """Keep only the most recent _MAX_ENTRIES lines."""
     try:

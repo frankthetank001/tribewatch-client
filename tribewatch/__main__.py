@@ -1075,12 +1075,18 @@ def _handle_reconnect(
     except Exception:
         log.debug("Failed to capture client phase for reconnect record", exc_info=True)
 
-    # Save start screenshot (file + base64 for server relay)
+    window_title = getattr(app.config.general, "window_title", "ArkAscended")
+    ocr_engine = getattr(app.config.tribe_log, "ocr_engine", "paddleocr")
+
+    # Save start screenshot — full ARK window, not the tribe log bbox
     start_screenshot = ""
     start_screenshot_b64 = ""
     try:
-        img = app.capture.grab()
-        start_screenshot, start_screenshot_b64 = _save_screenshot(img, "start")
+        from tribewatch.capture import _find_window_by_title, _grab_window
+        hwnd = _find_window_by_title(window_title)
+        img = _grab_window(hwnd, bbox=None) if hwnd else None
+        if img:
+            start_screenshot, start_screenshot_b64 = _save_screenshot(img, "start")
     except Exception:
         log.debug("Failed to save reconnect start screenshot", exc_info=True)
 
@@ -1094,9 +1100,6 @@ def _handle_reconnect(
         screenshot_start=start_screenshot,
         screenshot_start_b64=start_screenshot_b64,
     )
-
-    window_title = getattr(app.config.general, "window_title", "ArkAscended")
-    ocr_engine = getattr(app.config.tribe_log, "ocr_engine", "paddleocr")
     seq = ReconnectSequence(
         window_title=window_title,
         relay=relay,
@@ -1131,14 +1134,20 @@ def _handle_reconnect(
                     "Reconnect failed — fail counter now %d",
                     app._reconnect_fail_count,
                 )
-            # Save end screenshot on failure
+            # Use the failure screenshot captured by the reconnect sequence
+            # at the actual failure point (full ARK window, not tribe log bbox)
             end_screenshot = ""
-            end_screenshot_b64 = ""
-            try:
-                img = app.capture.grab()
-                end_screenshot, end_screenshot_b64 = _save_screenshot(img, "failed")
-            except Exception:
-                pass
+            end_screenshot_b64 = seq.failure_screenshot_b64 or ""
+            if end_screenshot_b64:
+                # Also save to disk for local reference
+                try:
+                    import base64 as _b64, io as _io
+                    from PIL import Image as _Image
+                    img_data = _b64.b64decode(end_screenshot_b64)
+                    img = _Image.open(_io.BytesIO(img_data))
+                    end_screenshot, _ = _save_screenshot(img, "failed")
+                except Exception:
+                    pass
             record.finalise(
                 outcome="failed",
                 failure_reason=seq.failure_reason,
@@ -1318,6 +1327,13 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             async def _on_tribe_unknown(msg: dict) -> None:
                 await _handle_tribe_unknown(cfg, config_path, msg)
 
+            async def _on_relay_connect() -> None:
+                """Send recent reconnect history to server on each connect."""
+                from tribewatch.reconnect_history import load_recent_records
+                records = load_recent_records(limit=50, include_images=True)
+                if records and _active_relay:
+                    await _active_relay.send_reconnect_history(records)
+
             relay = ServerRelay(
                 server_url=cfg.server.server_url,
                 auth_token=cfg.server.auth_token,
@@ -1327,6 +1343,7 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
                 on_config_update=_on_config_update,
                 on_auth_expired=_on_auth_expired,
                 on_tribe_unknown=_on_tribe_unknown,
+                on_connect=_on_relay_connect,
             )
             global _active_relay
             _active_relay = relay
