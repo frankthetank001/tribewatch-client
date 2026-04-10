@@ -43,10 +43,11 @@ def _install_namespace() -> str:
 
     Frozen exe → derived from the install dir name (e.g. "TribeWatch"
     or "TribeWatch-Dev"), so dev and stable installs have separate
-    PID lockfiles. Source runs share the default "TribeWatch" namespace.
+    PID lockfiles. Source runs use "TribeWatch-Source" so they don't
+    collide with any frozen install.
     """
     if not getattr(sys, "frozen", False):
-        return "TribeWatch"
+        return "TribeWatch-Source"
     try:
         # PyInstaller's sys.executable lives at <install>/TribeWatch.exe
         return Path(sys.executable).parent.name
