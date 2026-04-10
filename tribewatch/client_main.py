@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import sys
 from pathlib import Path
 
 from tribewatch import __version__
@@ -42,6 +43,15 @@ def main() -> None:
 
     _set_dpi_awareness()
     _set_console_title_and_icon()
+
+    # Frozen (PyInstaller) builds: ensure CWD is the install directory so
+    # relative paths (config, state files, debug screenshots) resolve
+    # correctly even when launched from a startup shortcut or scheduled
+    # task where Windows sets CWD to System32.
+    if is_frozen():
+        import os
+        install_dir = Path(sys.executable).parent
+        os.chdir(install_dir)
 
     parser = argparse.ArgumentParser(
         prog="TribeWatch",

@@ -765,6 +765,16 @@ class TribeWatchApp:
         # Surface tunable settings so the dashboard tile can show their
         # current state without an extra API call.
         status["auto_reconnect"] = bool(getattr(self.config.reconnect, "enabled", True))
+        rcfg = getattr(self.config, "reconnect", None)
+        status["reconnect_tunables"] = {
+            "speed": getattr(rcfg, "speed", 1.0) if rcfg else 1.0,
+            "launch_timeout": getattr(rcfg, "launch_timeout", 180.0) if rcfg else 180.0,
+            "title_timeout": getattr(rcfg, "title_timeout", 180.0) if rcfg else 180.0,
+            "load_timeout": getattr(rcfg, "load_timeout", 180.0) if rcfg else 180.0,
+            "browser_timeout": getattr(rcfg, "browser_timeout", 60.0) if rcfg else 60.0,
+            "tribe_log_delay": getattr(rcfg, "tribe_log_delay", 30.0) if rcfg else 30.0,
+            "load_stable_secs": getattr(rcfg, "load_stable_secs", 10.0) if rcfg else 10.0,
+        }
 
         # Dynamic bbox scaling — check if game resolution changed
         try:

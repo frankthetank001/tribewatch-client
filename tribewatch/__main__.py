@@ -1100,13 +1100,49 @@ def _handle_reconnect(
         screenshot_start=start_screenshot,
         screenshot_start_b64=start_screenshot_b64,
     )
+    def _on_attempt_done(attempt_num, outcome, reason, screenshot_b64, attempt_method):
+        """Save a history record for each individual attempt."""
+        end_screenshot = ""
+        end_screenshot_b64 = screenshot_b64 or ""
+        if end_screenshot_b64 and outcome != "success":
+            try:
+                import base64 as _b64, io as _io
+                from PIL import Image as _Image
+                img_data = _b64.b64decode(end_screenshot_b64)
+                img = _Image.open(_io.BytesIO(img_data))
+                end_screenshot, _ = _save_screenshot(img, f"attempt{attempt_num}")
+            except Exception:
+                pass
+        rec = ReconnectRecord(
+            trigger=trigger,
+            auto=auto,
+            method=attempt_method,
+            fail_count=fail_count,
+            client_phase=client_phase,
+            screenshot_start=start_screenshot,
+            screenshot_start_b64=start_screenshot_b64 if attempt_num == 1 else "",
+        )
+        rec.finalise(
+            outcome=outcome,
+            failure_reason=reason,
+            attempts=attempt_num,
+            switched_to_browser=(attempt_method == "browser" and method == "direct"),
+            screenshot_end=end_screenshot,
+            screenshot_end_b64=end_screenshot_b64,
+        )
+        rec.save()
+        if relay:
+            asyncio.create_task(relay.send_reconnect_record(rec.to_dict(include_images=True)))
+
     seq = ReconnectSequence(
         window_title=window_title,
         relay=relay,
         ocr_engine=ocr_engine,
         auto=auto,
         use_browser=use_browser,
+        reconnect_config=getattr(app.config, "reconnect", None),
     )
+    seq._on_attempt_done = _on_attempt_done
     app._reconnect_seq = seq
     task = seq.start()
     log.info("Reconnect sequence started (auto=%s, browser=%s, trigger=%s)", auto, use_browser, trigger)
@@ -1115,18 +1151,21 @@ def _handle_reconnect(
         if seq.succeeded:
             app._reconnect_fail_count = 0
             log.info("Reconnect succeeded — fail counter reset")
-            record.finalise(
-                outcome="success",
-                attempts=seq.attempt_count,
-                switched_to_browser=seq.switched_to_browser,
-            )
         elif _task.cancelled():
-            record.finalise(
+            # Save a cancelled record
+            rec = ReconnectRecord(
+                trigger=trigger, auto=auto, method=method,
+                fail_count=fail_count, client_phase=client_phase,
+                screenshot_start=start_screenshot,
+            )
+            rec.finalise(
                 outcome="cancelled",
                 failure_reason="Cancelled by user",
                 attempts=seq.attempt_count,
-                switched_to_browser=seq.switched_to_browser,
             )
+            rec.save()
+            if relay:
+                asyncio.create_task(relay.send_reconnect_record(rec.to_dict(include_images=True)))
         else:
             if auto:
                 app._reconnect_fail_count = getattr(app, "_reconnect_fail_count", 0) + 1
@@ -1134,32 +1173,6 @@ def _handle_reconnect(
                     "Reconnect failed — fail counter now %d",
                     app._reconnect_fail_count,
                 )
-            # Use the failure screenshot captured by the reconnect sequence
-            # at the actual failure point (full ARK window, not tribe log bbox)
-            end_screenshot = ""
-            end_screenshot_b64 = seq.failure_screenshot_b64 or ""
-            if end_screenshot_b64:
-                # Also save to disk for local reference
-                try:
-                    import base64 as _b64, io as _io
-                    from PIL import Image as _Image
-                    img_data = _b64.b64decode(end_screenshot_b64)
-                    img = _Image.open(_io.BytesIO(img_data))
-                    end_screenshot, _ = _save_screenshot(img, "failed")
-                except Exception:
-                    pass
-            record.finalise(
-                outcome="failed",
-                failure_reason=seq.failure_reason,
-                attempts=seq.attempt_count,
-                switched_to_browser=seq.switched_to_browser,
-                screenshot_end=end_screenshot,
-                screenshot_end_b64=end_screenshot_b64,
-            )
-        record.save()
-        # Send record (with embedded screenshots) to server for dashboard viewing
-        if relay:
-            asyncio.create_task(relay.send_reconnect_record(record.to_dict(include_images=True)))
         # If reconnect ended because character is dead, trigger death alert
         if seq.death_detected:
             app._handle_character_death()

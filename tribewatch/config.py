@@ -187,8 +187,20 @@ class ReconnectConfig:
     The reconnect feature relaunches ARK + rejoins the server when the
     client detects a disconnect / crash. Disable this if you don't want
     automatic re-joins.
+
+    Timing fields default to 1.0 (= use built-in defaults). Values
+    above 1.0 make the phase wait longer (good for slow machines),
+    below 1.0 makes it faster (good for fast machines).
     """
     enabled: bool = True
+    # Per-phase timeout multipliers (1.0 = default)
+    speed: float = 1.0              # overall multiplier — scales all phases
+    launch_timeout: float = 180.0   # seconds to wait for game window
+    title_timeout: float = 180.0    # seconds to wait for title screen
+    load_timeout: float = 180.0     # seconds to wait for game to load
+    browser_timeout: float = 60.0   # seconds for server browser UI elements
+    tribe_log_delay: float = 30.0   # seconds before opening tribe log
+    load_stable_secs: float = 10.0  # seconds of clear frames before declaring loaded
 
 
 @dataclass
