@@ -65,12 +65,25 @@ class ReconnectSequence:
         ocr_engine: str = "paddleocr",
         auto: bool = False,
         use_browser: bool = False,
+        reconnect_config: Any = None,
     ) -> None:
         self._window_title = window_title
         self._relay = relay
         self._ocr_engine = ocr_engine
         self._auto = auto
         self._use_browser = use_browser
+
+        # Apply timing from config, scaled by the speed multiplier
+        cfg = reconnect_config
+        speed = getattr(cfg, "speed", 1.0) if cfg else 1.0
+        self._launch_timeout = (getattr(cfg, "launch_timeout", _LAUNCH_TIMEOUT) if cfg else _LAUNCH_TIMEOUT) * speed
+        self._title_timeout = (getattr(cfg, "title_timeout", _TITLE_TIMEOUT) if cfg else _TITLE_TIMEOUT) * speed
+        self._load_timeout = (getattr(cfg, "load_timeout", _LOAD_TIMEOUT) if cfg else _LOAD_TIMEOUT) * speed
+        self._browser_timeout = (getattr(cfg, "browser_timeout", _BROWSER_TIMEOUT) if cfg else _BROWSER_TIMEOUT) * speed
+        self._tribe_log_delay = (getattr(cfg, "tribe_log_delay", _TRIBE_LOG_DELAY) if cfg else _TRIBE_LOG_DELAY) * speed
+        self._load_stable_secs = (getattr(cfg, "load_stable_secs", 10.0) if cfg else 10.0) * speed
+        # Consecutive clear frames needed = stable_secs / poll_interval
+        self._clear_threshold = max(2, int(self._load_stable_secs / _POLL_INTERVAL))
         self._task: asyncio.Task | None = None
         self._succeeded: bool = False
         self._failure_reason: str = ""
@@ -474,7 +487,7 @@ class ReconnectSequence:
         # Poll for game window
         hwnd = None
         elapsed = 0.0
-        while elapsed < _LAUNCH_TIMEOUT:
+        while elapsed < self._launch_timeout:
             await asyncio.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
             hwnd = _find_window_by_title(self._window_title)
@@ -482,7 +495,7 @@ class ReconnectSequence:
                 break
 
         if not hwnd:
-            await self._report("failed", f"Game window not found after {_LAUNCH_TIMEOUT}s")
+            await self._report("failed", f"Game window not found after {int(self._launch_timeout)}s")
             return "retry"
 
         await self._report("launching", f"Game window found (hwnd={hwnd})")
@@ -493,7 +506,7 @@ class ReconnectSequence:
         elapsed = 0.0
         last_update = 0.0
 
-        while elapsed < _TITLE_TIMEOUT:
+        while elapsed < self._title_timeout:
             await asyncio.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
 
@@ -516,7 +529,7 @@ class ReconnectSequence:
                 break
 
         if join_coords is None:
-            await self._report("failed", f"'JOIN LAST SESSION' not found after {_TITLE_TIMEOUT}s")
+            await self._report("failed", f"'JOIN LAST SESSION' not found after {int(self._title_timeout)}s")
             return "retry"
 
         # --- Stage 3: Click JOIN LAST SESSION ---
@@ -590,7 +603,7 @@ class ReconnectSequence:
         last_update = 0.0
         consecutive_clear = 0  # consecutive checks with no title/join UI
 
-        while elapsed < _LOAD_TIMEOUT:
+        while elapsed < self._load_timeout:
             await asyncio.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
 
@@ -674,11 +687,11 @@ class ReconnectSequence:
             # Require 5 consecutive clear frames (~10s) to avoid false
             # positives from brief blank transitions on slower machines.
             consecutive_clear += 1
-            if consecutive_clear >= 5:
+            if consecutive_clear >= self._clear_threshold:
                 opened = await self._open_tribe_log(pyautogui)
                 return "success" if opened else "retry"
 
-        await self._report("failed", f"Game did not load within {_LOAD_TIMEOUT}s")
+        await self._report("failed", f"Game did not load within {int(self._load_timeout)}s")
         return "retry"
 
     # --- Server browser fallback ---
@@ -713,7 +726,7 @@ class ReconnectSequence:
         # Poll for game window
         hwnd = None
         elapsed = 0.0
-        while elapsed < _LAUNCH_TIMEOUT:
+        while elapsed < self._launch_timeout:
             await asyncio.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
             hwnd = _find_window_by_title(self._window_title)
@@ -721,14 +734,14 @@ class ReconnectSequence:
                 break
 
         if not hwnd:
-            await self._report("failed", f"Game window not found after {_LAUNCH_TIMEOUT}s")
+            await self._report("failed", f"Game window not found after {int(self._launch_timeout)}s")
             return "retry"
 
         await self._report("launching", f"Game window found (hwnd={hwnd})")
 
         # Step 3: Wait for title screen (use JOIN LAST SESSION as readiness indicator)
         await self._report("waiting_title", "Waiting for title screen...")
-        await self._wait_for_text("JOIN LAST SESSION", _TITLE_TIMEOUT, "waiting_title")
+        await self._wait_for_text("JOIN LAST SESSION", self._title_timeout, "waiting_title")
 
         # Step 4: Press Space to dismiss "PRESS TO START" overlay — retry until dismissed
         await self._report("dismissing_title", "Pressing Space to dismiss title overlay...")
@@ -746,14 +759,14 @@ class ReconnectSequence:
 
         # Step 5: Find and click "JOIN GAME"
         await self._report("opening_browser", "Looking for JOIN GAME button...")
-        join_game_coords = await self._wait_for_text("JOIN GAME", _BROWSER_TIMEOUT, "opening_browser")
+        join_game_coords = await self._wait_for_text("JOIN GAME", self._browser_timeout, "opening_browser")
         self._click_at(join_game_coords[0], join_game_coords[1], pyautogui)
         await asyncio.sleep(1)
         await self._report("opening_browser", "Clicked JOIN GAME")
 
         # Step 6: Wait for server browser (look for SESSION NAME or SESSION FILTER)
         await self._report("searching_server", "Waiting for server browser...")
-        await self._wait_for_text("SESSION", _BROWSER_TIMEOUT, "searching_server")
+        await self._wait_for_text("SESSION", self._browser_timeout, "searching_server")
         await asyncio.sleep(1)
 
         # Step 7: Click search area and type server ID
@@ -797,7 +810,7 @@ class ReconnectSequence:
 
         # Step 8b: Find and click the JOIN button (exact match, bottom of screen)
         await self._report("clicking_join_browser", "Looking for JOIN button...")
-        join_coords = await self._wait_for_exact_text("JOIN", _BROWSER_TIMEOUT, "clicking_join_browser")
+        join_coords = await self._wait_for_exact_text("JOIN", self._browser_timeout, "clicking_join_browser")
         self._click_at(join_coords[0], join_coords[1], pyautogui)
         await asyncio.sleep(1)
         await self._report("clicking_join_browser", "Clicked JOIN in server browser")
@@ -808,7 +821,7 @@ class ReconnectSequence:
         last_update = 0.0
         consecutive_clear = 0
 
-        while elapsed < _LOAD_TIMEOUT:
+        while elapsed < self._load_timeout:
             await asyncio.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
 
@@ -869,11 +882,11 @@ class ReconnectSequence:
             # loaded — slower machines may show brief blank frames between
             # transitions before event/Easter dialogs pop up.
             consecutive_clear += 1
-            if consecutive_clear >= 5:
+            if consecutive_clear >= self._clear_threshold:
                 opened = await self._open_tribe_log(pyautogui)
                 return "success" if opened else "retry"
 
-        await self._report("failed", f"Game did not load within {_LOAD_TIMEOUT}s")
+        await self._report("failed", f"Game did not load within {int(self._load_timeout)}s")
         return "retry"
 
     def _check_death_screen(self, img) -> bool:
@@ -893,9 +906,9 @@ class ReconnectSequence:
         """
         await self._report(
             "waiting_load",
-            f"Game loaded — waiting {_TRIBE_LOG_DELAY}s before opening tribe log...",
+            f"Game loaded — waiting {int(self._tribe_log_delay)}s before opening tribe log...",
         )
-        await asyncio.sleep(_TRIBE_LOG_DELAY)
+        await asyncio.sleep(self._tribe_log_delay)
 
         # Check for death screen before attempting to open tribe log
         hwnd = _find_window_by_title(self._window_title)

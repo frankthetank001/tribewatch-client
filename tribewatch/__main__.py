@@ -1140,6 +1140,7 @@ def _handle_reconnect(
         ocr_engine=ocr_engine,
         auto=auto,
         use_browser=use_browser,
+        reconnect_config=getattr(app.config, "reconnect", None),
     )
     seq._on_attempt_done = _on_attempt_done
     app._reconnect_seq = seq
