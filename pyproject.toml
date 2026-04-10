@@ -20,6 +20,7 @@ dependencies = [
     # processes and verify kills. Was previously transitive — now an
     # explicit dep so the CI build env reliably includes it.
     "psutil>=5.9",
+    "qrcode>=7.0",
 ]
 
 [project.optional-dependencies]

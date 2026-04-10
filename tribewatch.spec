@@ -61,6 +61,7 @@ a = Analysis(
         # `import psutil` failed at runtime and the scan silently
         # returned []. collect_submodules() walks the whole package.
         *_psutil_submodules,
+        'qrcode',
     ],
     hookspath=[],
     hooksconfig={},
