@@ -372,14 +372,8 @@ class TribeWatchApp:
             if width <= 0 or height <= 0:
                 return False
 
-            # Centre region — death screen buttons are mid-screen
-            bw = int(width * 0.50)
-            bh = int(height * 0.50)
-            x0 = (width - bw) // 2
-            y0 = (height - bh) // 2
-            bbox = [x0, y0, x0 + bw, y0 + bh]
-
-            img = _grab_window(hwnd, bbox)
+            # Full window capture — death screen elements can be anywhere
+            img = _grab_window(hwnd, bbox=None)
             if img is None:
                 return False
 
