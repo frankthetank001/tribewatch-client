@@ -1137,33 +1137,39 @@ class TribeWatchApp:
             from tribewatch.capture import send_key
 
             log.warning(
-                "Screen idle for %ds with tribe log closed — pressing L to reopen",
+                "Screen idle for %ds with tribe log closed — attempting recovery",
                 int(idle_duration),
             )
 
-            # If the in-game pause menu is open, dismiss it first.
-            if await self._is_esc_menu_open():
-                log.info("Idle recovery: pause menu detected, dismissing before L")
-                send_key(window_title, "escape")
-                await asyncio.sleep(2)
+            check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
+            _L_ATTEMPTS = 3
+            recovered = False
 
-            # Press L to try reopening the tribe log
-            send_key(window_title, "l")
+            for attempt in range(1, _L_ATTEMPTS + 1):
+                # Dismiss esc menu if open before pressing L
+                if await self._is_esc_menu_open():
+                    log.info("Idle recovery: pause menu detected, dismissing before L (attempt %d/%d)", attempt, _L_ATTEMPTS)
+                    send_key(window_title, "escape")
+                    await asyncio.sleep(2)
 
-            # Wait for capture cycle to detect tribe log
-            check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 3, 10)
-            await asyncio.sleep(check_wait)
+                log.info("Idle recovery: pressing L to reopen tribe log (attempt %d/%d)", attempt, _L_ATTEMPTS)
+                send_key(window_title, "l")
+                await asyncio.sleep(check_wait)
 
-            if self._log_header_visible:
-                log.info("Recovery successful — tribe log reopened")
-                self._screen_still_since = None
+                if self._log_header_visible:
+                    log.info("Recovery successful — tribe log reopened (attempt %d/%d)", attempt, _L_ATTEMPTS)
+                    self._screen_still_since = None
+                    recovered = True
+                    break
+
+            if recovered:
                 continue
 
-            # Recovery failed — check for death screen before reconnecting
+            # All attempts failed — check for death screen before reconnecting
             if await self._is_death_screen():
                 self._handle_character_death()
                 continue
-            log.warning("Recovery failed — triggering auto-reconnect")
+            log.warning("Recovery failed after %d L attempts — triggering auto-reconnect", _L_ATTEMPTS)
             self._maybe_auto_reconnect("idle_recovery_failed")
 
     async def _capture_cycle(self) -> None:
