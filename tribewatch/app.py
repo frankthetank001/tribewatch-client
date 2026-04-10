@@ -804,6 +804,10 @@ class TribeWatchApp:
         if not overlay:
             return
 
+        if self._character_dead:
+            overlay.update("dead", "Dead \u2022 respawn required")
+            return
+
         if self._paused:
             overlay.update("paused", "Paused")
             return
