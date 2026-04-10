@@ -76,6 +76,7 @@ class ReconnectSequence:
         self._failure_screenshot_b64: str = ""
         self._attempt_count: int = 0
         self._initial_use_browser: bool = use_browser
+        self._death_detected: bool = False
 
         # Detect launcher (steam / epic)
         from tribewatch.server_id import detect_launcher
@@ -101,6 +102,10 @@ class ReconnectSequence:
     @property
     def switched_to_browser(self) -> bool:
         return self._use_browser and not self._initial_use_browser
+
+    @property
+    def death_detected(self) -> bool:
+        return self._death_detected
 
     def start(self) -> asyncio.Task:
         """Start the reconnect sequence as a background task."""
@@ -411,6 +416,11 @@ class ReconnectSequence:
             except Exception as exc:
                 await self._report("failed", f"Unexpected error: {exc}")
                 log.exception("Reconnect sequence failed (attempt %d)", attempt)
+
+            # Death screen detected — no point retrying
+            if self._death_detected:
+                log.warning("Character dead — aborting reconnect sequence")
+                return
 
             # Wait with exponential backoff before retrying
             await self._report(
@@ -841,6 +851,13 @@ class ReconnectSequence:
         await self._report("failed", f"Game did not load within {_LOAD_TIMEOUT}s")
         return "retry"
 
+    def _check_death_screen(self, img) -> bool:
+        """Return True if the image shows the ARK death/respawn screen."""
+        for keyword in ("CREATE NEW SURVIVOR", "RESPAWN"):
+            if self._find_text_coords(img, keyword) is not None:
+                return True
+        return False
+
     async def _open_tribe_log(self, pyautogui) -> bool:
         """Wait for the game to settle, then press L to open the tribe log.
 
@@ -854,6 +871,18 @@ class ReconnectSequence:
             f"Game loaded — waiting {_TRIBE_LOG_DELAY}s before opening tribe log...",
         )
         await asyncio.sleep(_TRIBE_LOG_DELAY)
+
+        # Check for death screen before attempting to open tribe log
+        hwnd = _find_window_by_title(self._window_title)
+        if hwnd:
+            img = _grab_window(hwnd, bbox=None)
+            if img and self._check_death_screen(img):
+                await self._report(
+                    "failed",
+                    "Character is dead — respawn required",
+                )
+                self._death_detected = True
+                return False
 
         for attempt in range(1, 4):
             send_key(self._window_title, "l")

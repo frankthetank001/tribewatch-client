@@ -29,6 +29,7 @@ STATUS_COLORS = {
     "playing":    "#a855f7",   # purple
     "idle":       "#d29922",   # orange
     "recovery":   "#d29922",   # orange
+    "dead":       "#e74c3c",   # red
     "offline":    "#8b949e",   # grey
     "paused":     "#8b949e",   # grey
 }
@@ -38,6 +39,7 @@ STATUS_ICONS = {
     "playing":    "\u25cf",
     "idle":       "\u25cf",
     "recovery":   "\u25cf",
+    "dead":       "\U0001f480",  # 💀
     "offline":    "\u25cf",
     "paused":     "\u25cf",
 }

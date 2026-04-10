@@ -401,6 +401,15 @@ class ServerRelay:
         except Exception:
             log.debug("Failed to send screenshot response", exc_info=True)
 
+    async def send_character_death(self) -> None:
+        """Notify the server that the character death screen was detected."""
+        if not self._connected or not self._ws or self._ws.closed:
+            return
+        try:
+            await self._ws.send_json({"type": "character_death"})
+        except Exception:
+            log.debug("Failed to send character_death", exc_info=True)
+
     async def send_reconnect_record(self, record: dict) -> None:
         """Send a completed reconnect audit record to the server."""
         if not self._connected or not self._ws or self._ws.closed:
