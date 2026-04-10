@@ -1160,6 +1160,9 @@ def _handle_reconnect(
         # Send record (with embedded screenshots) to server for dashboard viewing
         if relay:
             asyncio.create_task(relay.send_reconnect_record(record.to_dict(include_images=True)))
+        # If reconnect ended because character is dead, trigger death alert
+        if seq.death_detected:
+            app._handle_character_death()
 
     task.add_done_callback(_on_done)
 
