@@ -226,6 +226,8 @@ class TribeWatchApp:
         self._idle_recovery_attempted: bool = False  # prevents repeated recovery attempts
         self._overlay = None  # StatusOverlay (set by __main__ if enabled)
         self._auto_reconnect_cb = None  # callback set by __main__.py
+        self._on_character_death_cb = None  # callback set by __main__.py
+        self._character_dead = False  # prevents repeated death alerts
         self._on_server_change_cb = None  # callback set by __main__.py
         self._server_id: str = ""
         self._server_name: str = ""
@@ -266,6 +268,22 @@ class TribeWatchApp:
             return
         if self._auto_reconnect_cb:
             self._auto_reconnect_cb(trigger)
+
+    def _handle_character_death(self) -> None:
+        """Called when the death screen is detected instead of auto-reconnect.
+
+        Fires once per death — resets when the tribe log becomes visible
+        again (meaning the player respawned).
+        """
+        if self._character_dead:
+            return  # already alerted
+        self._character_dead = True
+        log.warning("Character death detected — skipping auto-reconnect")
+        if self._on_character_death_cb:
+            try:
+                self._on_character_death_cb()
+            except Exception:
+                log.exception("Character death callback error")
 
     async def _is_esc_menu_open(self) -> bool:
         """Return True if ARK's in-game pause menu is currently visible.
@@ -327,6 +345,56 @@ class TribeWatchApp:
             return False
         except Exception:
             log.debug("Esc menu OCR check failed", exc_info=True)
+            return False
+
+    async def _is_death_screen(self) -> bool:
+        """Return True if the ARK death/respawn screen is visible.
+
+        Looks for "CREATE NEW SURVIVOR" or "RESPAWN" in the centre of
+        the screen — these only appear when the character is dead.
+        """
+        try:
+            import ctypes
+            from tribewatch.capture import _IS_WIN32, _grab_window
+            from tribewatch.ocr_engine import recognize
+
+            if not _IS_WIN32:
+                return False
+            hwnd = getattr(self.capture, "_hwnd", None)
+            if not hwnd:
+                return False
+
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            rect = (ctypes.c_long * 4)()
+            user32.GetClientRect(hwnd, ctypes.byref(rect))
+            width = rect[2]
+            height = rect[3]
+            if width <= 0 or height <= 0:
+                return False
+
+            # Centre region — death screen buttons are mid-screen
+            bw = int(width * 0.50)
+            bh = int(height * 0.50)
+            x0 = (width - bw) // 2
+            y0 = (height - bh) // 2
+            bbox = [x0, y0, x0 + bw, y0 + bh]
+
+            img = _grab_window(hwnd, bbox)
+            if img is None:
+                return False
+
+            engine = getattr(self.config.tribe_log, "ocr_engine", "winrt") or "winrt"
+            text = await recognize(img, engine=engine, retries=0, preprocess=False)
+            if not text:
+                return False
+            upper = text.upper()
+            for needle in ("CREATE NEW SURVIVOR", "RESPAWN"):
+                if needle in upper:
+                    log.warning("Death screen detected via OCR keyword %r", needle)
+                    return True
+            return False
+        except Exception:
+            log.debug("Death screen OCR check failed", exc_info=True)
             return False
 
     def _save_auto_reconnect_debug_screenshot(self) -> None:
@@ -720,6 +788,7 @@ class TribeWatchApp:
         status["screen_still_since"] = getattr(self, "_screen_still_since", None)
         status["screen_change_pct"] = getattr(self, "_screen_change_pct", 100.0)
         status["active_play"] = getattr(self, "_active_play", False)
+        status["character_dead"] = getattr(self, "_character_dead", False)
 
         # Component health
         status["components"] = {
@@ -941,6 +1010,9 @@ class TribeWatchApp:
                 log.warning(
                     "Tribe log refresh: tribe log still visible after Esc — triggering auto-reconnect"
                 )
+                if await self._is_death_screen():
+                    self._handle_character_death()
+                    return False
                 self._maybe_auto_reconnect("tribe_log_refresh_stuck")
                 return False
 
@@ -978,6 +1050,9 @@ class TribeWatchApp:
                 "Tribe log refresh: tribe log NOT visible after %d L attempts — triggering auto-reconnect",
                 _L_ATTEMPTS,
             )
+            if await self._is_death_screen():
+                self._handle_character_death()
+                return False
             self._maybe_auto_reconnect("tribe_log_reopen_failed")
             return False
         except Exception:
@@ -1078,7 +1153,10 @@ class TribeWatchApp:
                 self._screen_still_since = None
                 continue
 
-            # Recovery failed — trigger auto-reconnect
+            # Recovery failed — check for death screen before reconnecting
+            if await self._is_death_screen():
+                self._handle_character_death()
+                continue
             log.warning("Recovery failed — triggering auto-reconnect")
             self._maybe_auto_reconnect("idle_recovery_failed")
 
@@ -1226,6 +1304,9 @@ class TribeWatchApp:
         if log_header_visible and not was_visible:
             log.info("Tribe log detected — monitoring active")
             self._log_visible_since = time.time()
+            if self._character_dead:
+                log.info("Character death state cleared — tribe log visible again")
+                self._character_dead = False
             self._kick_heartbeat()
             # Tribe log reappeared — trigger an immediate tribe window capture
             # to refresh member online/offline status without waiting for the

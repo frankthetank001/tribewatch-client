@@ -1349,6 +1349,7 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             _active_relay = relay
             app = TribeWatchApp(cfg, relay=relay)
             app._auto_reconnect_cb = lambda trigger="unknown": _handle_reconnect(app, auto=True, trigger=trigger)
+            app._on_character_death_cb = lambda: asyncio.create_task(relay.send_character_death())
 
             # Start overlay if enabled
             try:
