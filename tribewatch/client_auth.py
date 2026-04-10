@@ -1,8 +1,9 @@
 """Client-side Discord OAuth flow for obtaining a client token.
 
-Opens the user's browser to the server's /auth/client-login endpoint,
-runs a tiny local HTTP server to capture the token from the callback,
-and returns the signed token string automatically.
+Supports three authentication methods (tried in order):
+1. Device flow — display QR code / URL, poll server until user completes OAuth
+2. Localhost callback — open browser, capture token via local HTTP server
+3. Manual paste — show token on page for user to copy/paste
 """
 
 from __future__ import annotations
@@ -18,6 +19,120 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_LOCAL_PORT = 19283
 
+
+# ---------------------------------------------------------------------------
+# Device-flow authentication
+# ---------------------------------------------------------------------------
+
+def _display_device_instructions(verification_url: str, user_code: str) -> None:
+    """Print verification URL, user code, and optional QR code to terminal."""
+    print()
+    print("=" * 60)
+    print("  TribeWatch Device Authentication")
+    print("=" * 60)
+    print()
+    print("  Open this URL on any device:")
+    print(f"    {verification_url}")
+    print()
+
+    try:
+        import qrcode  # type: ignore[import-untyped]
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(verification_url)
+        qr.make(fit=True)
+        qr.print_tty()
+    except ImportError:
+        print("  (Install 'qrcode' package for QR code display)")
+    except Exception:
+        log.debug("QR code rendering failed", exc_info=True)
+
+    print()
+    print(f"  Your code: {user_code}")
+    print()
+    print("  Waiting for authorization...")
+    print("=" * 60)
+
+
+async def obtain_client_token_device(
+    server_url: str,
+    *,
+    tribe_hint: str = "",
+    timeout: float = 300.0,
+    poll_interval: float = 5.0,
+) -> str:
+    """Device-flow OAuth: request codes, display QR + URL, poll for token.
+
+    Returns the client token string, or "" on timeout/failure.
+    """
+    import aiohttp
+
+    url = server_url.rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+
+    # Step 1: Request device code from server
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(
+                f"{url}/api/v1/auth/device",
+                json={"tribe_hint": tribe_hint},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    log.debug("Device auth request returned %s", resp.status)
+                    return ""
+                data = await resp.json()
+        except Exception:
+            log.debug("Device auth request failed", exc_info=True)
+            return ""
+
+    device_code = data.get("device_code", "")
+    user_code = data.get("user_code", "")
+    verification_url = data.get("verification_url", "")
+    expires_in = data.get("expires_in", 300)
+    interval = data.get("interval", poll_interval)
+
+    if not device_code or not verification_url:
+        return ""
+
+    # Step 2: Display instructions + QR
+    _display_device_instructions(verification_url, user_code)
+
+    # Step 3: Poll until complete, expired, or timeout
+    deadline = asyncio.get_event_loop().time() + min(timeout, expires_in)
+    async with aiohttp.ClientSession() as session:
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(interval)
+            try:
+                async with session.get(
+                    f"{url}/api/v1/auth/device/poll",
+                    params={"device_code": device_code},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    result = await resp.json()
+                    status = result.get("status")
+                    if status == "complete":
+                        token = result.get("client_token", "")
+                        if token:
+                            log.info("Device flow: token received (len=%d)", len(token))
+                            print("\n  Authentication successful!")
+                            return token
+                    elif status == "expired":
+                        log.warning("Device code expired")
+                        print("\n  Device code expired.")
+                        return ""
+                    # status == "pending" → keep polling
+            except Exception:
+                log.debug("Device poll error", exc_info=True)
+
+    log.warning("Device flow timed out after %.0fs", timeout)
+    print("\n  Device flow timed out.")
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Localhost callback flow (existing)
+# ---------------------------------------------------------------------------
 
 class _TokenHandler(BaseHTTPRequestHandler):
     """HTTP handler that captures the token from the server's redirect."""
@@ -63,7 +178,7 @@ class _TokenHandler(BaseHTTPRequestHandler):
         pass
 
 
-async def obtain_client_token_interactive(
+async def _localhost_callback_flow(
     server_url: str,
     *,
     local_port: int = _DEFAULT_LOCAL_PORT,
@@ -72,29 +187,21 @@ async def obtain_client_token_interactive(
 ) -> str:
     """Open browser for OAuth, capture token automatically via localhost redirect.
 
-    1. Starts a tiny HTTP server on localhost:{local_port}
-    2. Opens browser to server's /auth/client-login?port={local_port}
-    3. User authenticates with Discord
-    4. Server redirects token to http://localhost:{local_port}/callback?token=...
-    5. Local server captures it and returns
-
-    Falls back to manual paste prompt if the localhost callback times out.
+    Returns the token string, or "" on timeout/failure.
     """
     url = server_url.rstrip("/")
     if not url.startswith(("http://", "https://")):
         url = f"https://{url}"
 
-    # Reset state
     _TokenHandler.token = ""
     event = threading.Event()
     _TokenHandler._event = event
 
-    # Start local HTTP server in a thread
     try:
         server = HTTPServer(("127.0.0.1", local_port), _TokenHandler)
     except OSError:
-        log.warning("Could not bind localhost:%d, falling back to manual paste", local_port)
-        return await _fallback_paste_prompt(url)
+        log.warning("Could not bind localhost:%d", local_port)
+        return ""
 
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
@@ -109,29 +216,28 @@ async def obtain_client_token_interactive(
     print("\nOpening browser for Discord authentication...")
     print("Waiting for authorization...")
 
-    # Wait for the callback
     got_token = await asyncio.get_event_loop().run_in_executor(
         None, lambda: event.wait(timeout),
     )
 
+    threading.Thread(target=server.shutdown, daemon=True).start()
+
     if got_token and _TokenHandler.token:
         token = _TokenHandler.token
-        log.info("Client token received (len=%d)", len(token))
-        # Shut down server in a background thread to avoid blocking the event loop
-        threading.Thread(target=server.shutdown, daemon=True).start()
+        log.info("Client token received via localhost callback (len=%d)", len(token))
         return token
 
-    # Timeout — fall back to manual paste
-    log.warning("Automatic token capture timed out, falling back to manual paste")
-    threading.Thread(target=server.shutdown, daemon=True).start()
-    return await _fallback_paste_prompt(url)
+    return ""
 
+
+# ---------------------------------------------------------------------------
+# Manual paste fallback
+# ---------------------------------------------------------------------------
 
 async def _fallback_paste_prompt(server_url: str) -> str:
     """Fall back to prompting the user to paste the token manually."""
     import sys
 
-    # Re-open browser without port param (shows token on page for copying)
     login_url = f"{server_url}/api/v1/auth/client-login"
     webbrowser.open(login_url)
 
@@ -195,3 +301,47 @@ async def _win32_paste_prompt() -> str:
                     pass
 
     return await loop.run_in_executor(None, _run_vbs)
+
+
+# ---------------------------------------------------------------------------
+# Main entry point — tries methods in order
+# ---------------------------------------------------------------------------
+
+async def obtain_client_token_interactive(
+    server_url: str,
+    *,
+    local_port: int = _DEFAULT_LOCAL_PORT,
+    timeout: float = 120.0,
+    tribe_hint: str = "",
+) -> str:
+    """Obtain a client token interactively. Tries in order:
+
+    1. Device flow (QR code / URL + polling)
+    2. Localhost callback (browser + local HTTP server)
+    3. Manual paste (browser + copy/paste prompt)
+    """
+    url = server_url.rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+
+    # 1. Try device flow first (works headless, on any device)
+    try:
+        token = await obtain_client_token_device(
+            url, tribe_hint=tribe_hint, timeout=300.0,
+        )
+        if token:
+            return token
+    except Exception:
+        log.debug("Device flow failed, falling back to localhost callback", exc_info=True)
+
+    # 2. Try localhost callback (opens browser on same machine)
+    log.info("Trying localhost callback flow...")
+    token = await _localhost_callback_flow(
+        url, local_port=local_port, timeout=timeout, tribe_hint=tribe_hint,
+    )
+    if token:
+        return token
+
+    # 3. Fall back to manual paste
+    log.warning("Localhost callback failed, falling back to manual paste")
+    return await _fallback_paste_prompt(url)
