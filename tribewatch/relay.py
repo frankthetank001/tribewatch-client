@@ -390,6 +390,15 @@ class ServerRelay:
         except Exception:
             log.debug("Failed to send screenshot response", exc_info=True)
 
+    async def send_reconnect_record(self, record: dict) -> None:
+        """Send a completed reconnect audit record to the server."""
+        if not self._connected or not self._ws or self._ws.closed:
+            return
+        try:
+            await self._ws.send_json({"type": "reconnect_record", "record": record})
+        except Exception:
+            log.debug("Failed to send reconnect record", exc_info=True)
+
     async def send_reconnect_status(
         self, stage: str, message: str, image: str = "", auto: bool = False,
     ) -> None:

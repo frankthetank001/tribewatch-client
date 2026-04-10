@@ -1027,16 +1027,20 @@ async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
     )
 
 
-def _handle_reconnect(app: Any, auto: bool = False, use_browser: bool | None = None) -> None:
+def _handle_reconnect(
+    app: Any,
+    auto: bool = False,
+    use_browser: bool | None = None,
+    trigger: str = "manual",
+) -> None:
     """Start a reconnect sequence (if not already running)."""
     from tribewatch.reconnect import ReconnectSequence
+    from tribewatch.reconnect_history import ReconnectRecord, _save_screenshot
 
     log = logging.getLogger(__name__)
     existing = getattr(app, "_reconnect_seq", None)
     if existing is not None and existing.running:
         if not auto:
-            # Manual reconnect from website/API — cancel the stale sequence
-            # (which may be sitting in a long backoff sleep) and start fresh.
             log.info("Cancelling existing reconnect sequence for manual retry")
             asyncio.create_task(existing.cancel())
         else:
@@ -1052,6 +1056,45 @@ def _handle_reconnect(app: Any, auto: bool = False, use_browser: bool | None = N
     if use_browser is None:
         use_browser = auto and fail_count >= 2
 
+    # Capture client phase snapshot
+    client_phase: dict = {}
+    try:
+        status = app.build_status()
+        still_since = status.get("screen_still_since")
+        import time as _time
+        client_phase = {
+            "monitoring": status.get("monitoring", False),
+            "active_play": status.get("active_play", False),
+            "paused": status.get("paused", False),
+            "ark_window": status.get("components", {}).get("ark_window", False),
+            "tribe_log_visible": status.get("components", {}).get("tribe_log", False),
+            "tribe_window_ok": status.get("components", {}).get("tribe_window", False),
+            "screen_change_pct": status.get("screen_change_pct", 0),
+            "idle_duration_secs": round(_time.time() - still_since, 1) if still_since else 0,
+        }
+    except Exception:
+        log.debug("Failed to capture client phase for reconnect record", exc_info=True)
+
+    # Save start screenshot (file + base64 for server relay)
+    start_screenshot = ""
+    start_screenshot_b64 = ""
+    try:
+        img = app.capture.grab()
+        start_screenshot, start_screenshot_b64 = _save_screenshot(img, "start")
+    except Exception:
+        log.debug("Failed to save reconnect start screenshot", exc_info=True)
+
+    method = "browser" if use_browser else "direct"
+    record = ReconnectRecord(
+        trigger=trigger,
+        auto=auto,
+        method=method,
+        fail_count=fail_count,
+        client_phase=client_phase,
+        screenshot_start=start_screenshot,
+        screenshot_start_b64=start_screenshot_b64,
+    )
+
     window_title = getattr(app.config.general, "window_title", "ArkAscended")
     ocr_engine = getattr(app.config.tribe_log, "ocr_engine", "paddleocr")
     seq = ReconnectSequence(
@@ -1063,18 +1106,51 @@ def _handle_reconnect(app: Any, auto: bool = False, use_browser: bool | None = N
     )
     app._reconnect_seq = seq
     task = seq.start()
-    log.info("Reconnect sequence started (auto=%s, browser=%s)", auto, use_browser)
+    log.info("Reconnect sequence started (auto=%s, browser=%s, trigger=%s)", auto, use_browser, trigger)
 
     def _on_done(_task: asyncio.Task) -> None:
         if seq.succeeded:
             app._reconnect_fail_count = 0
             log.info("Reconnect succeeded — fail counter reset")
-        elif auto:
-            app._reconnect_fail_count = getattr(app, "_reconnect_fail_count", 0) + 1
-            log.info(
-                "Reconnect failed — fail counter now %d",
-                app._reconnect_fail_count,
+            record.finalise(
+                outcome="success",
+                attempts=seq.attempt_count,
+                switched_to_browser=seq.switched_to_browser,
             )
+        elif _task.cancelled():
+            record.finalise(
+                outcome="cancelled",
+                failure_reason="Cancelled by user",
+                attempts=seq.attempt_count,
+                switched_to_browser=seq.switched_to_browser,
+            )
+        else:
+            if auto:
+                app._reconnect_fail_count = getattr(app, "_reconnect_fail_count", 0) + 1
+                log.info(
+                    "Reconnect failed — fail counter now %d",
+                    app._reconnect_fail_count,
+                )
+            # Save end screenshot on failure
+            end_screenshot = ""
+            end_screenshot_b64 = ""
+            try:
+                img = app.capture.grab()
+                end_screenshot, end_screenshot_b64 = _save_screenshot(img, "failed")
+            except Exception:
+                pass
+            record.finalise(
+                outcome="failed",
+                failure_reason=seq.failure_reason,
+                attempts=seq.attempt_count,
+                switched_to_browser=seq.switched_to_browser,
+                screenshot_end=end_screenshot,
+                screenshot_end_b64=end_screenshot_b64,
+            )
+        record.save()
+        # Send record (with embedded screenshots) to server for dashboard viewing
+        if relay:
+            asyncio.create_task(relay.send_reconnect_record(record.to_dict(include_images=True)))
 
     task.add_done_callback(_on_done)
 
@@ -1129,10 +1205,10 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             asyncio.create_task(_handle_screenshot(app, msg_id))
         elif command == "reconnect":
             app._reconnect_fail_count = 0
-            _handle_reconnect(app)
+            _handle_reconnect(app, trigger="manual")
         elif command == "reconnect_browser":
             app._reconnect_fail_count = 0
-            _handle_reconnect(app, use_browser=True)
+            _handle_reconnect(app, use_browser=True, trigger="manual_browser")
         elif command == "reconnect_cancel":
             asyncio.create_task(_handle_reconnect_cancel(app))
         elif command == "logs":
@@ -1255,7 +1331,7 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             global _active_relay
             _active_relay = relay
             app = TribeWatchApp(cfg, relay=relay)
-            app._auto_reconnect_cb = lambda: _handle_reconnect(app, auto=True)
+            app._auto_reconnect_cb = lambda trigger="unknown": _handle_reconnect(app, auto=True, trigger=trigger)
 
             # Start overlay if enabled
             try:

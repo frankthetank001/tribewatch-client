@@ -72,6 +72,9 @@ class ReconnectSequence:
         self._use_browser = use_browser
         self._task: asyncio.Task | None = None
         self._succeeded: bool = False
+        self._failure_reason: str = ""
+        self._attempt_count: int = 0
+        self._initial_use_browser: bool = use_browser
 
         # Detect launcher (steam / epic)
         from tribewatch.server_id import detect_launcher
@@ -85,6 +88,18 @@ class ReconnectSequence:
     @property
     def succeeded(self) -> bool:
         return self._succeeded
+
+    @property
+    def failure_reason(self) -> str:
+        return self._failure_reason
+
+    @property
+    def attempt_count(self) -> int:
+        return self._attempt_count
+
+    @property
+    def switched_to_browser(self) -> bool:
+        return self._use_browser and not self._initial_use_browser
 
     def start(self) -> asyncio.Task:
         """Start the reconnect sequence as a background task."""
@@ -127,6 +142,8 @@ class ReconnectSequence:
     async def _report(self, stage: str, message: str) -> None:
         """Report reconnect progress to the server, with a screenshot."""
         log.info("Reconnect [%s]: %s", stage, message)
+        if stage == "failed":
+            self._failure_reason = message
         image = self._capture_screenshot_b64()
         try:
             await self._relay.send_reconnect_status(stage, message, image=image, auto=self._auto)
@@ -371,6 +388,7 @@ class ReconnectSequence:
 
         while True:
             attempt += 1
+            self._attempt_count = attempt
             try:
                 if self._use_browser:
                     result = await self._do_browser_reconnect()
