@@ -602,7 +602,7 @@ class ReconnectSequence:
             if join_last is not None:
                 consecutive_clear = 0
                 await self._report(
-                    "clicking_join",
+                    "waiting_load",
                     f"JOIN LAST SESSION still visible at ({join_last[0]}, {join_last[1]}) — clicking",
                 )
                 focus_window(self._window_title)
@@ -618,8 +618,8 @@ class ReconnectSequence:
             if extra_join is not None:
                 consecutive_clear = 0
                 await self._report(
-                    "clicking_join",
-                    f"JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking",
+                    "waiting_load",
+                    f"Extra JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking",
                 )
                 focus_window(self._window_title)
                 await asyncio.sleep(0.3)
@@ -796,7 +796,7 @@ class ReconnectSequence:
             if join_last is not None:
                 consecutive_clear = 0
                 await self._report(
-                    "clicking_join_browser",
+                    "waiting_load",
                     f"JOIN LAST SESSION still visible at ({join_last[0]}, {join_last[1]}) — clicking",
                 )
                 focus_window(self._window_title)
@@ -810,8 +810,8 @@ class ReconnectSequence:
             if extra_join is not None:
                 consecutive_clear = 0
                 await self._report(
-                    "clicking_join_browser",
-                    f"JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking",
+                    "waiting_load",
+                    f"Extra JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking",
                 )
                 focus_window(self._window_title)
                 await asyncio.sleep(0.3)
