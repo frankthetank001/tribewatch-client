@@ -671,8 +671,10 @@ class ReconnectSequence:
                 return "retry"
 
             # --- No title screen, no JOIN, no errors — game might be loaded ---
+            # Require 5 consecutive clear frames (~10s) to avoid false
+            # positives from brief blank transitions on slower machines.
             consecutive_clear += 1
-            if consecutive_clear >= 2:
+            if consecutive_clear >= 5:
                 opened = await self._open_tribe_log(pyautogui)
                 return "success" if opened else "retry"
 
@@ -862,9 +864,12 @@ class ReconnectSequence:
                 await self._report("failed", "Landed on main menu — retrying")
                 return "retry"
 
-            # No UI elements — game might be loaded
+            # No UI elements — game might be loaded.
+            # Require 5 consecutive clear frames (~10s) before declaring
+            # loaded — slower machines may show brief blank frames between
+            # transitions before event/Easter dialogs pop up.
             consecutive_clear += 1
-            if consecutive_clear >= 2:
+            if consecutive_clear >= 5:
                 opened = await self._open_tribe_log(pyautogui)
                 return "success" if opened else "retry"
 
