@@ -927,17 +927,20 @@ class ReconnectSequence:
                 await self._report("failed", "Character is dead — respawn required")
                 self._death_detected = True
                 return False
-            # Click any residual JOIN buttons (event dialogs, etc.)
+            # Click any residual JOIN buttons (event dialogs, etc.) — and
+            # reset the settle timer so the game has a fresh full delay
+            # to actually load the world after the last click.
             extra_join = self._find_exact_text_coords(img, "JOIN")
             if extra_join is not None:
                 await self._report(
                     "waiting_load",
-                    f"Extra JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking",
+                    f"Extra JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking, resetting settle timer",
                 )
                 focus_window(self._window_title)
                 await asyncio.sleep(0.3)
                 send_click(self._window_title, extra_join[0], extra_join[1])
                 await asyncio.sleep(2)
+                elapsed = 0.0  # reset settle delay after a click
 
         # Final death screen check before pressing L
         hwnd = _find_window_by_title(self._window_title)
