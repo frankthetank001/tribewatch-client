@@ -925,6 +925,64 @@ class ReconnectSequence:
         await self._report("failed", f"Game did not load within {int(self._load_timeout)}s")
         return "retry"
 
+    def _dump_settle_ocr(self, elapsed_secs: int) -> None:
+        """Save a screenshot + full OCR text dump during the settle delay.
+
+        Files go to ``debug/settle_<timestamp>_<elapsed>s.{jpg,txt}``.
+        Used to diagnose why JOIN dialogs aren't being detected.
+        """
+        try:
+            from tribewatch.ocr_engine import _get_rapidocr_engine
+            import numpy as np
+            from datetime import datetime
+
+            hwnd = _find_window_by_title(self._window_title)
+            if not hwnd:
+                return
+            img = _grab_window(hwnd, bbox=None)
+            if img is None:
+                return
+
+            debug_dir = Path("debug")
+            debug_dir.mkdir(exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            stem = debug_dir / f"settle_{ts}_{elapsed_secs}s"
+
+            img.save(f"{stem}.jpg", format="JPEG", quality=70)
+
+            engine = _get_rapidocr_engine()
+            result, _ = engine(np.array(img))
+            lines = []
+            if result:
+                for det in result:
+                    bbox_points, text, conf = det
+                    xs = [p[0] for p in bbox_points]
+                    ys = [p[1] for p in bbox_points]
+                    cx = int(sum(xs) / len(xs))
+                    cy = int(sum(ys) / len(ys))
+                    try:
+                        c = float(conf)
+                        lines.append(f"({cx:>5},{cy:>5}) conf={c:.2f}  {text!r}")
+                    except (TypeError, ValueError):
+                        lines.append(f"({cx:>5},{cy:>5}) conf={conf}  {text!r}")
+            else:
+                lines.append("(no OCR detections)")
+            Path(f"{stem}.txt").write_text("\n".join(lines), encoding="utf-8")
+            log.info("Settle OCR dump: %s.jpg/.txt (%d detections)", stem, len(lines))
+
+            # Prune old settle dumps — keep last 30
+            try:
+                old_jpgs = sorted(debug_dir.glob("settle_*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+                for stale in old_jpgs[30:]:
+                    stale.unlink(missing_ok=True)
+                    txt = stale.with_suffix(".txt")
+                    if txt.exists():
+                        txt.unlink(missing_ok=True)
+            except Exception:
+                pass
+        except Exception:
+            log.debug("Settle OCR dump failed", exc_info=True)
+
     def _check_death_screen(self, img) -> bool:
         """Return True if the image shows the ARK death/respawn screen."""
         for keyword in ("CREATE NEW SURVIVOR", "RESPAWN"):
@@ -951,6 +1009,7 @@ class ReconnectSequence:
         log.info("Polling for extra JOIN dialogs during %ds settle delay", int(self._tribe_log_delay))
         elapsed = 0.0
         last_progress_log = 0.0
+        last_dump = 0.0
         while elapsed < self._tribe_log_delay:
             await asyncio.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
@@ -958,6 +1017,10 @@ class ReconnectSequence:
                 last_progress_log = elapsed
                 log.info("Settle delay: %ds elapsed, %ds remaining (no JOIN dialogs found yet)",
                          int(elapsed), int(self._tribe_log_delay - elapsed))
+            # Dump OCR result + screenshot every 5s for debugging
+            if elapsed - last_dump >= 5:
+                last_dump = elapsed
+                self._dump_settle_ocr(int(elapsed))
             hwnd = _find_window_by_title(self._window_title)
             if not hwnd:
                 continue
