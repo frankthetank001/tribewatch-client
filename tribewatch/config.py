@@ -59,16 +59,25 @@ class AlertRule:
 @dataclass
 class AlertsConfig:
     rules: list[AlertRule] = field(default_factory=list)
-    idle_alert_minutes: int = 10
-    idle_recovery_alert: bool = True
-    idle_ping: bool = False
-    idle_ping_target: str = ""  # role/user ID (empty = use global ping_role_id)
-    never_active_alert: bool = True  # alert if client connected but monitoring never starts
-    reconnect_alert: bool = True  # Discord alert on auto-reconnect success/failure
+    # --- Timing thresholds for server-synthesized client lifecycle alerts ---
+    # These drive the per-client timers on ClientHandler that fire
+    # client_idle / client_never_active / monitoring_lost events at the
+    # right cadence. The actual alert behavior (discord=?, ping=?,
+    # action=?) is now per-event-type in the alert_rules table — see
+    # the Client Events tab in the web UI.
+    idle_alert_minutes: int = 10  # time without monitoring/active_play before client_idle fires
+    never_active_alert_minutes: int = 10  # time connected without ever being ACTIVE before client_never_active fires
+    monitoring_lost_grace_seconds: int = 10  # debounce for monitoring_lost on true→false transitions
+    # --- Character death alert (orthogonal to client lifecycle) ---
     character_death_alert: bool = True  # Discord alert when character death screen detected
-    # Presence alerts (consolidated from former [presence] section)
-    offline_webhook: bool = False  # Discord alert on client offline
-    online_webhook: bool = False  # Discord alert on client back online
+    # --- Tribe-aggregate presence alerts (tribe went dark / came back) ---
+    # Fired by RelayManager via the Discord bot REST path (the name
+    # suggests "webhook" for historical reasons, but these are not HTTP
+    # webhooks — they go through bot_client.post_message). Phase B
+    # renamed offline_webhook → offline_alert, online_webhook →
+    # online_alert so the field names match reality.
+    offline_alert: bool = False  # Discord alert when the whole tribe goes offline
+    online_alert: bool = False  # Discord alert when the tribe comes back online
     presence_webhook_url: str = ""  # empty = use discord.alert_webhook
 
 
@@ -174,8 +183,8 @@ class ServerConfig:
 @dataclass
 class PresenceConfig:
     """Legacy — presence fields now live in AlertsConfig. Kept for backward compat."""
-    offline_webhook: bool = False
-    online_webhook: bool = False
+    offline_alert: bool = False
+    online_alert: bool = False
     webhook_url: str = ""
 
 
