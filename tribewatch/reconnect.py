@@ -343,6 +343,42 @@ class ReconnectSequence:
         await self._report("failed", f"'{target}' not found after {int(timeout)}s")
         raise _ReconnectAbort(f"'{target}' not found after {int(timeout)}s")
 
+    def _find_join_dialog_coords(self, img) -> tuple[int, int] | None:
+        """Find a residual JOIN button (event/Easter dialogs after game load).
+
+        OCR can read these as "JOIN" or "XJOIN" (the controller glyph
+        (X) gets merged with JOIN). Excludes main-menu strings like
+        "JOIN GAME" / "JOIN LAST SESSION" / "JOIN BROWSER" which we
+        shouldn't see at this point in the flow.
+        """
+        try:
+            from tribewatch.ocr_engine import _get_rapidocr_engine
+            import numpy as np
+
+            engine = _get_rapidocr_engine()
+            result, _ = engine(np.array(img))
+            if result is None:
+                return None
+
+            import re
+            # Must be JOIN with at most a 1-char prefix (X, A, etc. for
+            # controller glyphs) and optional surrounding punctuation.
+            # Rejects "TO JOIN THIS SERVER" (sentence) and "JOIN GAME" etc.
+            _GOOD = re.compile(r"^[\(\[]?[A-Z]?[\)\]]?\s*JOIN\s*[\(\[]?[A-Z]?[\)\]]?$")
+            for detection in result:
+                bbox_points, text, _conf = detection
+                upper = text.strip().upper()
+                if not _GOOD.match(upper):
+                    continue
+                xs = [p[0] for p in bbox_points]
+                ys = [p[1] for p in bbox_points]
+                cx = int(sum(xs) / len(xs))
+                cy = int(sum(ys) / len(ys))
+                return (cx, cy)
+        except Exception:
+            log.debug("OCR failed looking for JOIN dialog", exc_info=True)
+        return None
+
     def _find_exact_text_coords(self, img, target: str) -> tuple[int, int] | None:
         """OCR the image and find *target* as an exact match (case-insensitive).
 
@@ -936,7 +972,10 @@ class ReconnectSequence:
             # Click any residual JOIN buttons (event dialogs, etc.) — and
             # reset the settle timer so the game has a fresh full delay
             # to actually load the world after the last click.
-            extra_join = self._find_exact_text_coords(img, "JOIN")
+            # Match "JOIN", "XJOIN" (controller (X) glyph merged), etc.
+            # but not "JOIN LAST SESSION" or "JOIN GAME" which are
+            # main-menu screens we shouldn't be on by this point.
+            extra_join = self._find_join_dialog_coords(img)
             if extra_join is not None:
                 await self._report(
                     "waiting_load",
