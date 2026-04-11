@@ -336,17 +336,11 @@ def _discover_tribe_name_win32(
     cfg: object, config_path: Path, mode: str,
     saved: str, detected: str,
 ) -> None:
-    """Tribe name confirmation via Win32 MessageBox dialogs."""
-    import ctypes
-
+    """Tribe name confirmation via the overlay dialog (matches rename flow)."""
     from tribewatch.config import save_config
+    from tribewatch.overlay_ui import show_action_dialog, show_input_dialog
 
-    MB_YESNO = 0x04
-    MB_ICONQUESTION = 0x20
-    MB_TOPMOST = 0x40000
-    IDYES = 6
-
-    title = "TribeWatch \u2014 Tribe Name"
+    title = "TribeWatch \u2014 Tribe Setup"
 
     if not saved:
         # No saved tribe name — keep trying OCR until we get one
@@ -364,17 +358,30 @@ def _discover_tribe_name_win32(
 
             log.info("Tribe name detected: %s", detected)
 
-        result = ctypes.windll.user32.MessageBoxW(
-            0,
-            f'Detected tribe name:\n\n"{detected}"\n\nIs this correct?',
-            title,
-            MB_YESNO | MB_ICONQUESTION | MB_TOPMOST,
+        body = (
+            f'Detected tribe name:\n\n'
+            f'    "{detected}"\n\n'
+            f'Is this correct?'
         )
-        if result == IDYES:
+        choice = show_action_dialog(
+            title,
+            body,
+            [
+                (f'Yes — use "{detected}"', "yes"),
+                ("No — enter manually", "manual"),
+            ],
+            "yes",
+        )
+        if choice == "yes":
             cfg.tribe.tribe_name = detected
             save_config(cfg, config_path, mode=mode)
-        else:
-            name = _win32_input_box("Enter tribe name:", title)
+        elif choice == "manual":
+            name = show_input_dialog(
+                title,
+                "Enter your tribe name as it appears in the in-game tribe window:",
+                initial=detected,
+                confirm_label="Save",
+            )
             if name:
                 cfg.tribe.tribe_name = name
                 save_config(cfg, config_path, mode=mode)

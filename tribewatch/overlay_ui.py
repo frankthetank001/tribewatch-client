@@ -172,3 +172,152 @@ def show_action_dialog(
 
     root.mainloop()
     return result["value"]
+
+
+def show_input_dialog(
+    title: str,
+    message: str,
+    *,
+    initial: str = "",
+    placeholder: str = "",
+    confirm_label: str = "Confirm",
+    cancel_label: str = "Cancel",
+    fullscreen_backdrop: bool = True,
+) -> str:
+    """Show a modal text-input dialog matching the action dialog style.
+
+    Returns the entered text on confirm, or empty string on cancel.
+    """
+    import tkinter as tk
+
+    result = {"value": ""}
+
+    if fullscreen_backdrop:
+        root = tk.Tk()
+        root.title(title)
+        try:
+            root.attributes("-fullscreen", True)
+            root.attributes("-alpha", 0.3)
+            root.attributes("-topmost", True)
+            root.overrideredirect(True)
+        except Exception:
+            pass
+        root.configure(bg="black")
+    else:
+        root = tk.Tk()
+        root.withdraw()
+
+    top = tk.Toplevel(root)
+    top.overrideredirect(True)
+    try:
+        top.attributes("-topmost", True)
+    except Exception:
+        pass
+    top.configure(bg="#1a1a1a")
+
+    sw0 = top.winfo_screenwidth()
+    sh0 = top.winfo_screenheight()
+    init_w, init_h = 650, 280
+    top.geometry(f"{init_w}x{init_h}+{(sw0 - init_w) // 2}+{(sh0 - init_h) // 2}")
+
+    border = tk.Frame(top, bg="#FFD700", padx=3, pady=3)
+    border.pack(fill=tk.BOTH, expand=True)
+    inner = tk.Frame(border, bg="#1a1a1a", padx=28, pady=22)
+    inner.pack(fill=tk.BOTH, expand=True)
+
+    tk.Label(
+        inner, text=title,
+        fg="white", bg="#1a1a1a",
+        font=("Segoe UI", 14, "bold"),
+        justify="center",
+    ).pack(pady=(0, 12))
+
+    tk.Label(
+        inner, text=message,
+        fg="#e0e0e0", bg="#1a1a1a",
+        font=("Segoe UI", 11),
+        justify="left",
+        wraplength=620,
+    ).pack(pady=(0, 14))
+
+    entry_var = tk.StringVar(value=initial)
+    entry = tk.Entry(
+        inner, textvariable=entry_var,
+        font=("Segoe UI", 12),
+        bg="#2a2a2a", fg="white", insertbackground="white",
+        relief=tk.FLAT, bd=2,
+        justify="center",
+    )
+    entry.pack(fill=tk.X, ipady=6, pady=(0, 18))
+
+    btn_frame = tk.Frame(inner, bg="#1a1a1a")
+    btn_frame.pack()
+
+    def _confirm() -> None:
+        result["value"] = entry_var.get().strip()
+        try:
+            top.destroy()
+        except Exception:
+            pass
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+    def _cancel() -> None:
+        result["value"] = ""
+        try:
+            top.destroy()
+        except Exception:
+            pass
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+    confirm_btn = tk.Button(
+        btn_frame, text=confirm_label,
+        command=_confirm,
+        font=("Segoe UI", 11, "bold"),
+        bg="#225522", fg="white", activebackground="#337733",
+        relief=tk.RAISED, bd=2, padx=14, pady=6,
+    )
+    confirm_btn.pack(side=tk.LEFT, padx=8)
+
+    tk.Button(
+        btn_frame, text=cancel_label,
+        command=_cancel,
+        font=("Segoe UI", 11, "bold"),
+        bg="#444444", fg="white", activebackground="#666666",
+        relief=tk.RAISED, bd=2, padx=14, pady=6,
+    ).pack(side=tk.LEFT, padx=8)
+
+    top.bind("<Escape>", lambda _e: _cancel())
+    top.bind("<Return>", lambda _e: _confirm())
+    entry.focus_set()
+
+    top.update_idletasks()
+    actual_w = top.winfo_reqwidth()
+    actual_h = top.winfo_reqheight()
+    if actual_w < init_w:
+        actual_w = init_w
+    sw = top.winfo_screenwidth()
+    sh = top.winfo_screenheight()
+    x = (sw - actual_w) // 2
+    y = (sh - actual_h) // 2
+    top.geometry(f"{actual_w}x{actual_h}+{x}+{y}")
+
+    try:
+        root.attributes("-topmost", False)
+    except Exception:
+        pass
+
+    top.lift()
+    top.focus_force()
+    try:
+        top.grab_set()
+    except Exception:
+        pass
+
+    root.mainloop()
+    return result["value"]
