@@ -361,10 +361,11 @@ class ReconnectSequence:
                 return None
 
             import re
-            # Must be JOIN with at most a 1-char prefix (X, A, etc. for
-            # controller glyphs) and optional surrounding punctuation.
-            # Rejects "TO JOIN THIS SERVER" (sentence) and "JOIN GAME" etc.
-            _GOOD = re.compile(r"^[\(\[]?[A-Z]?[\)\]]?\s*JOIN\s*[\(\[]?[A-Z]?[\)\]]?$")
+            # Match a JOIN button with optional controller glyph prefix
+            # (OCR can read it as X, A, β, B, etc.) and optional brackets.
+            # Rejects sentences like "TO JOIN THIS SERVER" and main-menu
+            # strings like "JOIN GAME" / "JOIN LAST SESSION".
+            _GOOD = re.compile(r"^[\(\[]?\S?[\)\]]?\s*JOIN\s*[\(\[]?\S?[\)\]]?$")
             for detection in result:
                 bbox_points, text, _conf = detection
                 upper = text.strip().upper()
@@ -948,16 +949,10 @@ class ReconnectSequence:
         )
         # Active poll during the settle delay so we can click any JOIN
         # dialogs that pop up during loading transitions.
-        log.info("Polling for extra JOIN dialogs during %ds settle delay", int(self._tribe_log_delay))
         elapsed = 0.0
-        last_progress_log = 0.0
         while elapsed < self._tribe_log_delay:
             await asyncio.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
-            if elapsed - last_progress_log >= 10:
-                last_progress_log = elapsed
-                log.info("Settle delay: %ds elapsed, %ds remaining (no JOIN dialogs found yet)",
-                         int(elapsed), int(self._tribe_log_delay - elapsed))
             hwnd = _find_window_by_title(self._window_title)
             if not hwnd:
                 continue
