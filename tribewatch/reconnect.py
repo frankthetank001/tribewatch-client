@@ -899,18 +899,50 @@ class ReconnectSequence:
     async def _open_tribe_log(self, pyautogui) -> bool:
         """Wait for the game to settle, then press L to open the tribe log.
 
-        Retries up to 3 times since the first press can be swallowed by
-        loading transitions or input lag.
+        During the settle delay, keeps polling for and clicking any
+        residual JOIN buttons (event/Easter dialogs that pop up after
+        the game loads). Retries L up to 3 times since the first press
+        can be swallowed by loading transitions or input lag.
 
         Returns True if the tribe log was confirmed open, False otherwise.
         """
         await self._report(
             "waiting_load",
-            f"Game loaded — waiting {int(self._tribe_log_delay)}s before opening tribe log...",
+            f"Game loaded — waiting {int(self._tribe_log_delay)}s for dialogs before opening tribe log...",
         )
-        await asyncio.sleep(self._tribe_log_delay)
+        # Active poll during the settle delay so we can click any JOIN
+        # dialogs that pop up during loading transitions.
+        elapsed = 0.0
+        while elapsed < self._tribe_log_delay:
+            await asyncio.sleep(_POLL_INTERVAL)
+            elapsed += _POLL_INTERVAL
+            hwnd = _find_window_by_title(self._window_title)
+            if not hwnd:
+                continue
+            img = _grab_window(hwnd, bbox=None)
+            if img is None:
+                continue
+            # Death screen — abort early
+            if self._check_death_screen(img):
+                await self._report("failed", "Character is dead — respawn required")
+                self._death_detected = True
+                return False
+            # Click any residual JOIN buttons (event dialogs, etc.) — and
+            # reset the settle timer so the game has a fresh full delay
+            # to actually load the world after the last click.
+            extra_join = self._find_exact_text_coords(img, "JOIN")
+            if extra_join is not None:
+                await self._report(
+                    "waiting_load",
+                    f"Extra JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking, resetting settle timer",
+                )
+                focus_window(self._window_title)
+                await asyncio.sleep(0.3)
+                send_click(self._window_title, extra_join[0], extra_join[1])
+                await asyncio.sleep(2)
+                elapsed = 0.0  # reset settle delay after a click
 
-        # Check for death screen before attempting to open tribe log
+        # Final death screen check before pressing L
         hwnd = _find_window_by_title(self._window_title)
         if hwnd:
             img = _grab_window(hwnd, bbox=None)
