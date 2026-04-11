@@ -96,8 +96,13 @@ async def obtain_client_token_device(
     if not device_code or not verification_url:
         return ""
 
-    # Step 2: Display instructions + QR
+    # Step 2: Display instructions + QR, and auto-open the browser
     _display_device_instructions(verification_url, user_code)
+    try:
+        log.info("Opening browser to %s", verification_url)
+        webbrowser.open(verification_url)
+    except Exception:
+        log.debug("Failed to auto-open browser for device flow", exc_info=True)
 
     # Step 3: Poll until complete, expired, or timeout
     deadline = asyncio.get_event_loop().time() + min(timeout, expires_in)
