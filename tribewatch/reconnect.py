@@ -361,10 +361,11 @@ class ReconnectSequence:
                 return None
 
             import re
-            # Must be JOIN with at most a 1-char prefix (X, A, etc. for
-            # controller glyphs) and optional surrounding punctuation.
-            # Rejects "TO JOIN THIS SERVER" (sentence) and "JOIN GAME" etc.
-            _GOOD = re.compile(r"^[\(\[]?[A-Z]?[\)\]]?\s*JOIN\s*[\(\[]?[A-Z]?[\)\]]?$")
+            # Match a JOIN button with optional controller glyph prefix
+            # (OCR can read it as X, A, β, B, etc.) and optional brackets.
+            # Rejects sentences like "TO JOIN THIS SERVER" and main-menu
+            # strings like "JOIN GAME" / "JOIN LAST SESSION".
+            _GOOD = re.compile(r"^[\(\[]?\S?[\)\]]?\s*JOIN\s*[\(\[]?\S?[\)\]]?$")
             for detection in result:
                 bbox_points, text, _conf = detection
                 upper = text.strip().upper()
