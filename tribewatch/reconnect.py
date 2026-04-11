@@ -912,10 +912,16 @@ class ReconnectSequence:
         )
         # Active poll during the settle delay so we can click any JOIN
         # dialogs that pop up during loading transitions.
+        log.info("Polling for extra JOIN dialogs during %ds settle delay", int(self._tribe_log_delay))
         elapsed = 0.0
+        last_progress_log = 0.0
         while elapsed < self._tribe_log_delay:
             await asyncio.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
+            if elapsed - last_progress_log >= 10:
+                last_progress_log = elapsed
+                log.info("Settle delay: %ds elapsed, %ds remaining (no JOIN dialogs found yet)",
+                         int(elapsed), int(self._tribe_log_delay - elapsed))
             hwnd = _find_window_by_title(self._window_title)
             if not hwnd:
                 continue
