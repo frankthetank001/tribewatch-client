@@ -987,18 +987,6 @@ class ReconnectSequence:
                     # Fall through to next attempt
 
             log.info("Tribe log not detected after pressing L (attempt %d/3)", attempt)
-            # Check if a JOIN dialog is still on screen blocking L — click it
-            hwnd = _find_window_by_title(self._window_title)
-            if hwnd:
-                img = _grab_window(hwnd, bbox=None)
-                if img:
-                    extra_join = self._find_exact_text_coords(img, "JOIN")
-                    if extra_join is not None:
-                        log.warning("Found extra JOIN dialog blocking L key — clicking and retrying")
-                        focus_window(self._window_title)
-                        await asyncio.sleep(0.3)
-                        send_click(self._window_title, extra_join[0], extra_join[1])
-                        await asyncio.sleep(3)
 
         # All attempts to open tribe log failed
         await self._report(
