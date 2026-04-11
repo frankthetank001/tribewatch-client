@@ -37,7 +37,6 @@ class DiscordConfig:
     ping_role_id: str = ""
     batch_interval: int = 15
     mentions: dict[str, str] = field(default_factory=dict)
-    owner_discord_id: str = ""  # tribe owner's Discord user ID; use "!owner" in ping fields
     guild_id: str = ""  # Discord guild (server) ID; enables role-based auto-provisioning
 
 
