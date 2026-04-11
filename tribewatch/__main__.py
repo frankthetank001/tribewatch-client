@@ -283,7 +283,6 @@ def _apply_env_overrides(cfg: object) -> None:
 
     # Note: discord, alerts, generator, and presence are per-tribe settings
     # stored in the tribe_config DB — not configurable via env vars.
-    # owner_discord_id lives in discord config (per-tribe).
 
 
 def _open_dashboard_for_tribe(server_url: str, tribe_name: str) -> None:

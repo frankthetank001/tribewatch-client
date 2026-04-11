@@ -19,13 +19,35 @@ log = logging.getLogger(__name__)
 
 
 def _normalize(text: str) -> str:
-    """Lowercase, strip OCR noise characters, collapse whitespace."""
+    """Lowercase, strip OCR noise characters, collapse whitespace.
+
+    Also folds common OCR digit-in-letter-context confusions so that
+    the same in-game line re-read by a later OCR pass produces an
+    identical normalized string. Example: a Pegomastax death line may
+    come out as ``Peg0mastax`` in one capture and ``Pegomastax`` in
+    another — the zero inside a run of lowercase letters folds to
+    ``o`` here, lifting the fuzzy-match ratio above threshold so the
+    dedup cache treats them as the same event instead of re-firing
+    the alert 10+ minutes apart on retransmission.
+
+    Folds are gated by lowercase-letter context on BOTH sides, so
+    legitimate digits like ``Lvl 15`` stay intact (space + digit +
+    space is not a substitution target).
+    """
     text = text.strip().lower()
     # Strip pipe chars and trailing punctuation noise that OCR introduces
     # at visual line-break boundaries (|, /, \, ;, _, +, *)
     text = re.sub(r"[|/\\;_+*]+", " ", text)
     # Strip trailing punctuation junk (comma, period, colon after !)
     text = re.sub(r"[,.:;]+\s*$", "", text)
+    # OCR digit-in-letter-context substitutions — only fold when the
+    # digit is surrounded by lowercase letters on both sides, so
+    # "lvl 15" and "Day 1490" stay untouched but "peg0mastax" folds to
+    # "pegomastax".
+    text = re.sub(r"(?<=[a-z])0(?=[a-z])", "o", text)
+    text = re.sub(r"(?<=[a-z])1(?=[a-z])", "l", text)
+    text = re.sub(r"(?<=[a-z])5(?=[a-z])", "s", text)
+    text = re.sub(r"(?<=[a-z])8(?=[a-z])", "b", text)
     return re.sub(r"\s+", " ", text.strip())
 
 
