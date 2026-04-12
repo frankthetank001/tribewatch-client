@@ -68,8 +68,8 @@ class AlertsConfig:
     idle_alert_minutes: int = 10  # time without monitoring/active_play before client_idle fires
     never_active_alert_minutes: int = 10  # time connected without ever being ACTIVE before client_never_active fires
     monitoring_lost_grace_seconds: int = 10  # debounce for monitoring_lost on true→false transitions
-    # --- Character death alert (orthogonal to client lifecycle) ---
-    character_death_alert: bool = True  # Discord alert when character death screen detected
+    # Phase C removed ``character_death_alert`` — character death is now
+    # a per-tribe rule in the alert_rules table (event_type='character_death').
     # --- Tribe-aggregate presence alerts (tribe went dark / came back) ---
     # Fired by RelayManager via the Discord bot REST path (the name
     # suggests "webhook" for historical reasons, but these are not HTTP
