@@ -210,7 +210,18 @@ class DedupStore:
         in the batch that established the mark. Across separate captures,
         re-reading the same game-second is always a retransmission.
         Genuinely new events at the same game-second within a single
-        capture batch are handled by the count-aware logic in filter_new.
+        capture batch are handled by the count-aware logic in filter_new
+        (they all arrive in one batch before the high water advances).
+
+        If this proves insufficient in the future (e.g. high-water
+        poisoning by garbled OCR), a complementary approach is a
+        **wall-clock cooldown per (day, time)**: track the real-time
+        timestamp of when each game-second was first processed, and
+        suppress any arrival at the same game-second if more than N
+        seconds of real time have elapsed since first encounter
+        (e.g. 120–180s). This would catch re-reads regardless of
+        high-water state, at the cost of a small additional dict
+        persisted alongside the hash store.
         """
         dt = _parse_daytime(event)
         return dt <= self._high_water
