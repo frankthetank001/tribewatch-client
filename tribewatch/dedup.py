@@ -35,6 +35,14 @@ def _normalize(text: str) -> str:
     space is not a substitution target).
     """
     text = text.strip().lower()
+    # Fold fullwidth ASCII variants (U+FF01–U+FF5E) to their normal
+    # ASCII counterparts. OCR engines occasionally produce fullwidth
+    # parentheses, hyphens, etc. — e.g. （ instead of (.
+    text = text.translate(
+        str.maketrans(
+            {chr(c): chr(c - 0xFEE0) for c in range(0xFF01, 0xFF5F)}
+        )
+    )
     # Strip pipe chars and trailing punctuation noise that OCR introduces
     # at visual line-break boundaries (|, /, \, ;, _, +, *)
     text = re.sub(r"[|/\\;_+*]+", " ", text)
@@ -196,9 +204,27 @@ class DedupStore:
         self._evict()
 
     def _is_older_than_high_water(self, event: TribeLogEvent) -> bool:
-        """Return True if the event is strictly older than the high-water mark."""
+        """Return True if the event is at or older than the high-water mark.
+
+        Events at the exact high-water timestamp were already processed
+        in the batch that established the mark. Across separate captures,
+        re-reading the same game-second is always a retransmission.
+        Genuinely new events at the same game-second within a single
+        capture batch are handled by the count-aware logic in filter_new
+        (they all arrive in one batch before the high water advances).
+
+        If this proves insufficient in the future (e.g. high-water
+        poisoning by garbled OCR), a complementary approach is a
+        **wall-clock cooldown per (day, time)**: track the real-time
+        timestamp of when each game-second was first processed, and
+        suppress any arrival at the same game-second if more than N
+        seconds of real time have elapsed since first encounter
+        (e.g. 120–180s). This would catch re-reads regardless of
+        high-water state, at the cost of a small additional dict
+        persisted alongside the hash store.
+        """
         dt = _parse_daytime(event)
-        return dt < self._high_water
+        return dt <= self._high_water
 
     # Maximum forward jump allowed for the high-water mark (in days).
     # Prevents garbled OCR day numbers (e.g. "1089228" from "1089" + junk)
