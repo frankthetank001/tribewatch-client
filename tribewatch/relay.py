@@ -206,7 +206,16 @@ class ServerRelay:
                     await self._handle_message(data)
                 except json.JSONDecodeError:
                     log.debug("Invalid JSON from server: %s", msg.data[:100])
-            elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                exc = self._ws.exception()
+                log.warning("Relay WebSocket error: %s", exc)
+                break
+            elif msg.type == aiohttp.WSMsgType.CLOSED:
+                close_code = getattr(self._ws, "close_code", None)
+                log.warning("Relay WebSocket closed by server (code=%s)", close_code)
+                break
+            elif msg.type == aiohttp.WSMsgType.CLOSE:
+                log.warning("Relay WebSocket received CLOSE frame")
                 break
 
     async def _handle_message(self, data: dict) -> None:
