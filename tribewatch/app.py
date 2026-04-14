@@ -974,7 +974,7 @@ class TribeWatchApp:
         the tribe log isn't currently visible or the user is mid-play.
         The periodic loop and idle-monitor still pass ``manual=False``.
         """
-        from tribewatch.capture import send_key
+        from tribewatch.capture import send_key, focus_window, is_window_foreground
 
         check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
         log.info(
@@ -997,6 +997,16 @@ class TribeWatchApp:
         if not window_title:
             log.info("Tribe log refresh: no window_title configured, skipping")
             return False
+
+        # PostMessage (used by send_key) only registers in-game when the
+        # window has input focus. If ARK isn't foreground, the Esc/L
+        # keys are silently ignored and the refresh appears to succeed
+        # while doing nothing. Focus the window first — if it's already
+        # foreground this is a no-op.
+        if not is_window_foreground(window_title):
+            log.info("Tribe log refresh: ARK not foreground, focusing window")
+            focus_window(window_title)
+            await asyncio.sleep(0.3)
 
         try:
             log.info("Tribe log refresh: pressing Esc (manual=%s)", manual)
@@ -1136,12 +1146,18 @@ class TribeWatchApp:
             self._idle_recovery_attempted = True
 
             window_title = self.config.general.window_title
-            from tribewatch.capture import send_key
+            from tribewatch.capture import send_key, focus_window, is_window_foreground
 
             log.warning(
                 "Screen idle for %ds with tribe log closed — attempting recovery",
                 int(idle_duration),
             )
+
+            # Focus ARK so the PostMessage keystrokes actually register.
+            if window_title and not is_window_foreground(window_title):
+                log.info("Idle recovery: ARK not foreground, focusing window")
+                focus_window(window_title)
+                await asyncio.sleep(0.3)
 
             check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
             _L_ATTEMPTS = 3
