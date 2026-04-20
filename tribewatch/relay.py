@@ -170,6 +170,12 @@ class ServerRelay:
         self._connected = True
         log.info("Relay connected and authenticated")
 
+        # Start the listener BEFORE anything that waits on a server response.
+        # Without this, _flush_buffer's `events_ack` would arrive on the socket
+        # but nothing would be reading it — the pending-ack future would never
+        # be set, timing out after 10s and re-buffering the same events forever.
+        self._listen_task = asyncio.create_task(self._listen())
+
         # Send pending config snapshot (tribe_name etc.)
         if self._pending_config is not None:
             try:
@@ -186,11 +192,10 @@ class ServerRelay:
             except Exception:
                 log.debug("on_connect callback error", exc_info=True)
 
-        # Flush buffered events
+        # Flush buffered events (listener is running, so acks resolve)
         await self._flush_buffer()
 
-        # Listen for server messages
-        self._listen_task = asyncio.create_task(self._listen())
+        # Wait for the listener to finish (i.e. WS closed).
         try:
             await self._listen_task
         except asyncio.CancelledError:

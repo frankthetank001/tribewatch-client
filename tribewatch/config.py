@@ -168,6 +168,10 @@ class DiscordNotificationsConfig:
 class GeneratorConfig:
     discord: bool = True          # global toggle for generator Discord pings
     ping_target: str = ""         # default ping target (empty = use discord.ping_role_id)
+    # Fuel % thresholds at which to fire reminders. 0 == expired.
+    # Default fires at 2% and expired; admins can opt into 5% too via
+    # the Generators tab on /alerts.
+    alert_thresholds: list[int] = field(default_factory=lambda: [2, 0])
 
 
 @dataclass
