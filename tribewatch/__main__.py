@@ -1350,9 +1350,17 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
                 await _handle_tribe_unknown(cfg, config_path, msg)
 
             async def _on_relay_connect() -> None:
-                """Send recent reconnect history to server on each connect."""
+                """Send recent reconnect history to server on each connect.
+
+                Images are deliberately NOT embedded: with 40+ saved
+                screenshots the base64-inlined payload grew past 15 MB,
+                exceeding the server's WS frame limit and causing the
+                server to close every connection within ~1s (endless
+                reconnect loop). Metadata-only is cheap and still gives
+                the dashboard everything it needs to render the list.
+                """
                 from tribewatch.reconnect_history import load_recent_records
-                records = load_recent_records(limit=50, include_images=True)
+                records = load_recent_records(limit=50, include_images=False)
                 if records and _active_relay:
                     await _active_relay.send_reconnect_history(records)
 
