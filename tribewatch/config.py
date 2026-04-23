@@ -24,8 +24,15 @@ class TribeLogConfig:
     # Pixel-change percentage above which a frame is considered "moving"
     # (i.e. the user is actively playing). Lower = more sensitive to
     # subtle motion (HUD blinks, water shimmer); higher = only flags
-    # bigger camera moves. Default 2.0%.
+    # bigger camera moves. Default 2.0%.  This is the EXIT threshold
+    # (below this = still).
     active_play_threshold: float = 2.0
+    # Entry threshold: a frame must exceed THIS to flag active_play
+    # True.  Having entry > exit gives hysteresis so main-menu
+    # animations (low-level pulsing / cursor shimmer) don't latch the
+    # flag True indefinitely.  Default 8.0% — gameplay camera motion
+    # easily clears this, menu idle motion typically does not.
+    active_play_entry_threshold: float = 8.0
 
 
 @dataclass
