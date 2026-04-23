@@ -226,6 +226,33 @@ class DedupStore:
         dt = _parse_daytime(event)
         return dt <= self._high_water
 
+    def _is_day_beyond_reference(self, event: TribeLogEvent) -> bool:
+        """Return True if the event's day is suspiciously ahead of the
+        authoritative reference.
+
+        The existing ``_advance_high_water`` guard prevents high-water
+        poisoning when OCR produces a garbled day number (e.g. Echo's
+        ``Day 78610`` or ``Day 4012`` from concatenated tribe log lines).
+        But without a second guard, the event itself still flows through
+        ``filter_new`` and gets dispatched / persisted with the bogus
+        day number.
+
+        Here we reject such events outright.  Uses the EOS reference
+        day when available (ground truth from the server), otherwise
+        the current high-water day.  Events with ``day > ref + MAX_DAY_JUMP``
+        are dropped before hitting the dedup set.  With no reference
+        available (ref_day == 0), we can't tell what's real, so we
+        allow everything — matching the existing high-water guard's
+        bootstrap behavior.
+        """
+        if self._eos_ref is not None:
+            ref_day = self._eos_ref[0]
+        else:
+            ref_day = self._high_water[0]
+        if ref_day <= 0:
+            return False
+        return event.day > ref_day + self._MAX_DAY_JUMP
+
     # Maximum forward jump allowed for the high-water mark (in days).
     # Prevents garbled OCR day numbers (e.g. "1089228" from "1089" + junk)
     # from poisoning the high-water mark and suppressing all future events.
@@ -292,11 +319,20 @@ class DedupStore:
 
         Events older than the high-water mark are always considered duplicates,
         preventing re-notification when the user scrolls the tribe log.
+        Events with a day number suspiciously far ahead of the authoritative
+        EOS reference are dropped as OCR artifacts.
 
         Note: for count-aware dedup of batches with duplicate events,
         use filter_new() instead.
         """
         if self._is_older_than_high_water(event):
+            return False
+        if self._is_day_beyond_reference(event):
+            log.warning(
+                "Dropping event with suspicious day %d (raw=%r) — too far "
+                "ahead of reference (max jump %d)",
+                event.day, event.raw_text[:80], self._MAX_DAY_JUMP,
+            )
             return False
         key = _event_key(event)
         return self._get_count(key) == 0
@@ -315,6 +351,16 @@ class DedupStore:
         for event in events:
             if self._is_older_than_high_water(event):
                 batch_keys.append(None)  # rejected by high-water
+            elif self._is_day_beyond_reference(event):
+                # OCR produced a day number impossibly far ahead of the
+                # server's authoritative day.  Drop silently from the
+                # batch so it never hits Discord or the DB.
+                log.warning(
+                    "Dropping event with suspicious day %d (raw=%r) — too "
+                    "far ahead of reference (max jump %d)",
+                    event.day, event.raw_text[:80], self._MAX_DAY_JUMP,
+                )
+                batch_keys.append(None)
             else:
                 key = _event_key(event)
                 batch_counts[key] += 1
