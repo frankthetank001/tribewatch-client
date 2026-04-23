@@ -1198,11 +1198,25 @@ class TribeWatchApp:
         img = self.capture.grab()
         if img is None:
             was_visible = self._log_header_visible
+            was_active = self._active_play
             self._log_header_visible = False
+            # Reset motion / active-play state so the server's presence
+            # calculation correctly transitions to INACTIVE when the
+            # game window disappears.  Without this, a stale
+            # active_play=True from the previous session persists across
+            # heartbeats and the dashboard continues to show "playing"
+            # long after ARK has exited.
+            self._active_play = False
+            self._active_play_still_count = 0
+            self._screen_still_since = None
             if was_visible:
                 log.info("Tribe log lost — window not found")
+            elif was_active:
+                log.info("Window not found — resetting active_play")
             else:
                 log.debug("Capture returned None, skipping cycle")
+            if was_active:
+                self._kick_heartbeat()
             return
 
         self._last_capture_at = time.time()
@@ -1211,9 +1225,18 @@ class TribeWatchApp:
         from PIL import ImageChops, ImageStat
         thumb = img.copy()
         thumb.thumbnail((160, 90))
+        # Exit / "still" threshold — below this the screen is considered idle.
         active_threshold = float(
             getattr(self.config.tribe_log, "active_play_threshold", 2.0) or 2.0
         )
+        # Entry threshold — must be crossed before we latch active_play
+        # True.  Hysteresis prevents main-menu animations from getting us
+        # stuck in "playing" forever.
+        entry_threshold = float(
+            getattr(self.config.tribe_log, "active_play_entry_threshold", 8.0) or 8.0
+        )
+        if entry_threshold < active_threshold:
+            entry_threshold = active_threshold
         if self._prev_thumb is not None and thumb.size == self._prev_thumb.size:
             diff = ImageChops.difference(thumb, self._prev_thumb)
             stat = ImageStat.Stat(diff)
@@ -1226,13 +1249,40 @@ class TribeWatchApp:
                 self._screen_still_since = None  # screen is active
         self._prev_thumb = thumb
 
+        # Per-cycle debug log of the numbers driving active_play so it's
+        # diagnosable when the state seems stuck (main-menu latch, etc).
+        # DEBUG every cycle + INFO once per minute so the numbers are
+        # visible at default log levels without spamming.
+        log.debug(
+            "screen change %.2f%% (active_play=%s still_count=%d entry=%.1f exit=%.1f)",
+            self._screen_change_pct, self._active_play,
+            self._active_play_still_count, entry_threshold, active_threshold,
+        )
+        _now = time.monotonic()
+        _last = getattr(self, "_active_play_diag_last", 0.0)
+        if _now - _last >= 60.0:
+            self._active_play_diag_last = _now
+            log.info(
+                "screen change %.2f%% (active_play=%s entry=%.1f exit=%.1f)",
+                self._screen_change_pct, self._active_play,
+                entry_threshold, active_threshold,
+            )
+
         # Active play detection — skip OCR when the screen is changing
         # (user is actively playing). Tribe window captures (connect/disconnect)
         # still run on their own 30s loop.
-        # Enters immediately on first movement, but requires 5 consecutive
-        # still frames (~10s) before exiting to avoid flapping.
+        # Hysteresis: entry requires >= entry_threshold (default 8%),
+        # exit requires < active_threshold (default 2%) for 5 consecutive
+        # frames (~10s).  Main-menu low-level motion stays between these
+        # bands, so the flag doesn't latch True on a menu.
         was_active = self._active_play
-        screen_moving = self._screen_change_pct >= active_threshold
+        if not self._active_play:
+            screen_moving = self._screen_change_pct >= entry_threshold
+        else:
+            # Once active, any motion at or above the exit threshold
+            # counts as "still-counter reset" — we only leave active
+            # play after a sustained quiet period.
+            screen_moving = self._screen_change_pct >= active_threshold
         if screen_moving:
             self._active_play = True
             self._active_play_still_count = 0
