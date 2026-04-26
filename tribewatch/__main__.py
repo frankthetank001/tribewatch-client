@@ -831,11 +831,22 @@ async def _handle_server_change(
             # _tribe_cycle will re-populate once the new tribe is detected.
             app._tribe_info = None
             app._paused = False
+            # Accepting any change clears the previous decline — if the user
+            # later returns to the declined server, prompt again.
+            app._declined_server_id = ""
             log.info("Server change accepted — monitoring resumed (server_id=%s)", new_id)
         else:
+            # Remember the declined server_id so the same change isn't
+            # re-detected on every status poll, which previously nagged
+            # the user with the same dialog repeatedly.  The next time
+            # they transfer to a *different* server (including back to
+            # the one being monitored), the prompt fires again.
+            app._declined_server_id = new_id
             log.info(
                 "Server change declined — monitoring stays paused "
-                "(use /resume or transfer back to unpause)"
+                "(server_id=%s; use /resume or transfer to a different "
+                "server to unpause)",
+                new_id,
             )
 
 
@@ -1428,6 +1439,12 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
 
             def _on_server_change(old_id, old_name, new_id, new_name):
                 if getattr(app, "_server_change_pending", False):
+                    return
+                # Don't re-prompt for a server change the user already
+                # declined.  The skip only applies while they're still on
+                # the declined server — transferring to any other server
+                # produces a different new_id and re-fires the prompt.
+                if new_id and new_id == getattr(app, "_declined_server_id", ""):
                     return
                 app._server_change_pending = True
                 app._paused = True  # pause immediately (sync) before async handler
