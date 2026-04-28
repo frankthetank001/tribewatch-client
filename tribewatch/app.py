@@ -751,6 +751,17 @@ class TribeWatchApp:
                         log.info("Server ID detected: %s (%s)", new_id, new_name)
                     self._server_id = new_id
                     self._server_name = new_name
+                    # If we just returned to the monitored server after
+                    # declining a change to a different one, clear the
+                    # pause and the decline memo so monitoring resumes
+                    # without requiring /resume.
+                    if getattr(self, "_declined_server_id", "") and getattr(self, "_paused", False):
+                        log.info(
+                            "Returned to monitored server %s — clearing decline and resuming",
+                            new_id,
+                        )
+                        self._declined_server_id = ""
+                        self._paused = False
         except Exception:
             log.debug("Server info lookup failed", exc_info=True)
         status["server_id"] = getattr(self, "_server_id", "")

@@ -704,9 +704,17 @@ _active_relay: Any = None
 
 
 async def _handle_screenshot(app: Any, msg_id: str) -> None:
-    """Capture a full-window screenshot, JPEG-encode, and send via relay."""
+    """Capture a full-window screenshot, JPEG-encode, and send via relay.
+
+    Calibration regions (tribe_log, parasaur, tribe) are drawn as outlined
+    rectangles on top of the captured image so the dashboard's screenshot
+    button doubles as a quick way to verify the OCR bboxes line up with
+    what the game is actually showing.
+    """
     import base64
     import io
+
+    from PIL import ImageDraw
 
     from tribewatch.capture import _find_window_by_title, _grab_window
 
@@ -725,6 +733,33 @@ async def _handle_screenshot(app: Any, msg_id: str) -> None:
     if img is None:
         log.warning("Screenshot capture returned None")
         return
+
+    # Overlay the three calibration regions (only the configured ones).
+    # Bboxes are stored in client-area pixel coords; _grab_window with
+    # bbox=None returns the full client-area image, so they line up 1:1.
+    try:
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        draw = ImageDraw.Draw(img)
+        regions = [
+            ("tribe_log", getattr(app.config, "tribe_log", None), (255, 64, 64)),
+            ("parasaur", getattr(app.config, "parasaur", None), (64, 220, 64)),
+            ("tribe", getattr(app.config, "tribe", None), (64, 160, 255)),
+        ]
+        for label, section, color in regions:
+            bbox = list(getattr(section, "bbox", None) or [])
+            if len(bbox) != 4:
+                continue
+            left, top, right, bottom = bbox
+            draw.rectangle((left, top, right, bottom), outline=color, width=3)
+            # Label tab anchored just above the rectangle (or just inside
+            # if the rect is at y=0 and would clip off-screen)
+            tx, ty = left, max(top - 18, 0)
+            tw = len(label) * 7 + 8
+            draw.rectangle((tx, ty, tx + tw, ty + 16), fill=color)
+            draw.text((tx + 4, ty + 2), label, fill=(0, 0, 0))
+    except Exception:
+        log.debug("Failed to overlay calibration regions on screenshot", exc_info=True)
 
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=70)
@@ -796,11 +831,22 @@ async def _handle_server_change(
             # _tribe_cycle will re-populate once the new tribe is detected.
             app._tribe_info = None
             app._paused = False
+            # Accepting any change clears the previous decline — if the user
+            # later returns to the declined server, prompt again.
+            app._declined_server_id = ""
             log.info("Server change accepted — monitoring resumed (server_id=%s)", new_id)
         else:
+            # Remember the declined server_id so the same change isn't
+            # re-detected on every status poll, which previously nagged
+            # the user with the same dialog repeatedly.  The next time
+            # they transfer to a *different* server (including back to
+            # the one being monitored), the prompt fires again.
+            app._declined_server_id = new_id
             log.info(
                 "Server change declined — monitoring stays paused "
-                "(use /resume or transfer back to unpause)"
+                "(server_id=%s; use /resume or transfer to a different "
+                "server to unpause)",
+                new_id,
             )
 
 
@@ -1393,6 +1439,12 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
 
             def _on_server_change(old_id, old_name, new_id, new_name):
                 if getattr(app, "_server_change_pending", False):
+                    return
+                # Don't re-prompt for a server change the user already
+                # declined.  The skip only applies while they're still on
+                # the declined server — transferring to any other server
+                # produces a different new_id and re-fires the prompt.
+                if new_id and new_id == getattr(app, "_declined_server_id", ""):
                     return
                 app._server_change_pending = True
                 app._paused = True  # pause immediately (sync) before async handler
