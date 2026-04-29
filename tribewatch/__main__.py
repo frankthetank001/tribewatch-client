@@ -659,11 +659,58 @@ def _cmd_run(config_path: Path, *, skip_unverified_setup: bool = False) -> None:
             log = logging.getLogger(__name__)
             log.exception("Forced setup wizard failed")
 
+    _warn_if_exclusive_fullscreen()
+
     # --- Tribe name discovery ---
     if cfg.tribe.bbox:
         _discover_and_confirm_tribe_name(cfg, cp, mode="client")
 
     _cmd_run_client(cfg, cp)
+
+
+def _warn_if_exclusive_fullscreen() -> None:
+    """Warn the user if ARK is in exclusive fullscreen.
+
+    Exclusive fullscreen (FullscreenMode=0) breaks PrintWindow capture
+    after windowed→fullscreen transitions and prevents our tkinter
+    overlay from showing on top of the game. Fullscreen Windowed
+    (FullscreenMode=1, borderless) renders through DWM and works for
+    both. The warning fires every launch while the mode is bad —
+    fixing it in ARK's video settings silences it.
+    """
+    log = logging.getLogger(__name__)
+    try:
+        from tribewatch.server_id import get_fullscreen_mode
+        mode = get_fullscreen_mode()
+    except Exception:
+        log.debug("Fullscreen mode lookup failed", exc_info=True)
+        return
+    if mode != 0:
+        return  # not exclusive fullscreen — nothing to warn about
+
+    log.warning(
+        "ARK is set to exclusive Fullscreen — capture and overlay will "
+        "be unreliable. Recommended: Settings → Video → 'Fullscreen "
+        "Windowed' (borderless).",
+    )
+    try:
+        from tribewatch.overlay_ui import show_action_dialog
+        show_action_dialog(
+            "TribeWatch — Display Mode Warning",
+            (
+                "ARK is currently in exclusive Fullscreen mode.\n\n"
+                "TribeWatch works best in 'Fullscreen Windowed' "
+                "(borderless) — exclusive Fullscreen breaks screen "
+                "capture after mode switches and prevents the "
+                "TribeWatch overlay from showing over the game.\n\n"
+                "To fix: ARK → Settings → Video → set "
+                "Window Mode to 'Fullscreen Windowed', then Apply."
+            ),
+            [("Continue anyway", "ok")],
+            "ok",
+        )
+    except Exception:
+        log.debug("Fullscreen warning dialog failed", exc_info=True)
 
 
 async def _handle_log_dump(msg_id: str) -> None:

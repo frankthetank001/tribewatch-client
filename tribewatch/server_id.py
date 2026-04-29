@@ -183,6 +183,31 @@ def get_server_info() -> dict[str, str]:
     return {"server_id": "", "server_name": ""}
 
 
+def get_fullscreen_mode() -> int | None:
+    """Read FullscreenMode from GameUserSettings.ini.
+
+    Unreal Engine values:
+        0 = Fullscreen (exclusive — breaks PrintWindow capture and
+            blocks our overlay)
+        1 = Fullscreen Windowed (borderless — recommended)
+        2 = Windowed
+
+    Returns the int or ``None`` if the file can't be read or the key
+    is missing.
+    """
+    text = _read_game_user_settings()
+    if text is None:
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("FullscreenMode="):
+            try:
+                return int(stripped.split("=", 1)[1].strip())
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
 def get_game_resolution() -> tuple[int, int] | None:
     """Read ResolutionSizeX/ResolutionSizeY from GameUserSettings.ini.
 
