@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 
 _IS_WIN32 = sys.platform == "win32"
 
+PW_CLIENTONLY = 1
 PW_RENDERFULLCONTENT = 2
 
 
@@ -265,8 +266,15 @@ def _grab_window(hwnd: int, bbox: list[int] | None = None) -> Image.Image | None
         bitmap = gdi32.CreateCompatibleBitmap(hdc, width, height)
         old_obj = gdi32.SelectObject(mem_dc, bitmap)
 
-        # 4. PrintWindow with PW_RENDERFULLCONTENT (required for DirectX games)
-        ret = user32.PrintWindow(hwnd, mem_dc, PW_RENDERFULLCONTENT)
+        # 4. PrintWindow with PW_CLIENTONLY | PW_RENDERFULLCONTENT.
+        #    PW_CLIENTONLY excludes title bar / borders so the captured
+        #    image is pure client area — matches how calibration stores
+        #    bboxes (screen→client offset is applied at save time, see
+        #    calibrate.py). Without PW_CLIENTONLY, windowed-mode captures
+        #    contain the title bar at the top, shifting the visible
+        #    region down by the chrome height.
+        #    PW_RENDERFULLCONTENT is required for ARK's DirectX surface.
+        ret = user32.PrintWindow(hwnd, mem_dc, PW_CLIENTONLY | PW_RENDERFULLCONTENT)
         if not ret:
             log.warning("PrintWindow failed for hwnd %s", hwnd)
             return None
