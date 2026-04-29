@@ -659,11 +659,58 @@ def _cmd_run(config_path: Path, *, skip_unverified_setup: bool = False) -> None:
             log = logging.getLogger(__name__)
             log.exception("Forced setup wizard failed")
 
+    _warn_if_exclusive_fullscreen()
+
     # --- Tribe name discovery ---
     if cfg.tribe.bbox:
         _discover_and_confirm_tribe_name(cfg, cp, mode="client")
 
     _cmd_run_client(cfg, cp)
+
+
+def _warn_if_exclusive_fullscreen() -> None:
+    """Warn the user if ARK is in exclusive fullscreen.
+
+    Exclusive fullscreen (FullscreenMode=0) breaks PrintWindow capture
+    after windowed→fullscreen transitions and prevents our tkinter
+    overlay from showing on top of the game. Fullscreen Windowed
+    (FullscreenMode=1, borderless) renders through DWM and works for
+    both. The warning fires every launch while the mode is bad —
+    fixing it in ARK's video settings silences it.
+    """
+    log = logging.getLogger(__name__)
+    try:
+        from tribewatch.server_id import get_fullscreen_mode
+        mode = get_fullscreen_mode()
+    except Exception:
+        log.debug("Fullscreen mode lookup failed", exc_info=True)
+        return
+    if mode != 0:
+        return  # not exclusive fullscreen — nothing to warn about
+
+    log.warning(
+        "ARK is set to exclusive Fullscreen — capture and overlay will "
+        "be unreliable. Recommended: Settings → Video → 'Fullscreen "
+        "Windowed' (borderless).",
+    )
+    try:
+        from tribewatch.overlay_ui import show_action_dialog
+        show_action_dialog(
+            "TribeWatch — Display Mode Warning",
+            (
+                "ARK is currently in exclusive Fullscreen mode.\n\n"
+                "TribeWatch works best in 'Fullscreen Windowed' "
+                "(borderless) — exclusive Fullscreen breaks screen "
+                "capture after mode switches and prevents the "
+                "TribeWatch overlay from showing over the game.\n\n"
+                "To fix: ARK → Settings → Video → set "
+                "Window Mode to 'Fullscreen Windowed', then Apply."
+            ),
+            [("Continue anyway", "ok")],
+            "ok",
+        )
+    except Exception:
+        log.debug("Fullscreen warning dialog failed", exc_info=True)
 
 
 async def _handle_log_dump(msg_id: str) -> None:
@@ -1133,14 +1180,24 @@ def _handle_reconnect(
     # Save start screenshot — full ARK window, not the tribe log bbox
     start_screenshot = ""
     start_screenshot_b64 = ""
+    start_resolution: tuple[int, int] | None = None
     try:
-        from tribewatch.capture import _find_window_by_title, _grab_window
+        from tribewatch.capture import (
+            _find_window_by_title,
+            _grab_window,
+            get_window_client_size,
+        )
         hwnd = _find_window_by_title(window_title)
-        img = _grab_window(hwnd, bbox=None) if hwnd else None
-        if img:
-            start_screenshot, start_screenshot_b64 = _save_screenshot(img, "start")
+        if hwnd:
+            start_resolution = get_window_client_size(hwnd)
+            img = _grab_window(hwnd, bbox=None)
+            if img:
+                start_screenshot, start_screenshot_b64 = _save_screenshot(img, "start")
     except Exception:
         log.debug("Failed to save reconnect start screenshot", exc_info=True)
+
+    if start_resolution is None:
+        start_resolution = getattr(getattr(app, "capture", None), "last_window_size", None)
 
     method = "browser" if use_browser else "direct"
     record = ReconnectRecord(
@@ -1151,6 +1208,7 @@ def _handle_reconnect(
         client_phase=client_phase,
         screenshot_start=start_screenshot,
         screenshot_start_b64=start_screenshot_b64,
+        resolution=start_resolution,
     )
     def _on_attempt_done(attempt_num, outcome, reason, screenshot_b64, attempt_method):
         """Save a history record for each individual attempt."""
@@ -1165,6 +1223,26 @@ def _handle_reconnect(
                 end_screenshot, _ = _save_screenshot(img, f"attempt{attempt_num}")
             except Exception:
                 pass
+        # Re-query resolution at the moment this attempt finished — if
+        # the OS has flipped display modes mid-sequence (monitor toggle,
+        # RDP), each attempt's row will reflect what was actually being
+        # rendered when the OCR failed.
+        attempt_resolution: tuple[int, int] | None = None
+        try:
+            from tribewatch.capture import (
+                _find_window_by_title,
+                get_window_client_size,
+            )
+            hwnd2 = _find_window_by_title(window_title)
+            if hwnd2:
+                attempt_resolution = get_window_client_size(hwnd2)
+        except Exception:
+            pass
+        if attempt_resolution is None:
+            attempt_resolution = getattr(
+                getattr(app, "capture", None), "last_window_size", None,
+            )
+
         rec = ReconnectRecord(
             trigger=trigger,
             auto=auto,
@@ -1173,6 +1251,7 @@ def _handle_reconnect(
             client_phase=client_phase,
             screenshot_start=start_screenshot,
             screenshot_start_b64=start_screenshot_b64 if attempt_num == 1 else "",
+            resolution=attempt_resolution,
         )
         rec.finalise(
             outcome=outcome,
@@ -1209,6 +1288,7 @@ def _handle_reconnect(
                 trigger=trigger, auto=auto, method=method,
                 fail_count=fail_count, client_phase=client_phase,
                 screenshot_start=start_screenshot,
+                resolution=start_resolution,
             )
             rec.finalise(
                 outcome="cancelled",

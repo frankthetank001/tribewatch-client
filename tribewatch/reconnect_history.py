@@ -68,6 +68,7 @@ class ReconnectRecord:
         client_phase: dict,
         screenshot_start: str = "",
         screenshot_start_b64: str = "",
+        resolution: tuple[int, int] | None = None,
     ) -> None:
         self.started_at = _now_iso()
         self._start_mono = time.monotonic()
@@ -78,6 +79,7 @@ class ReconnectRecord:
         self.client_phase = client_phase
         self.screenshot_start = screenshot_start
         self.screenshot_start_b64 = screenshot_start_b64
+        self.resolution = resolution
 
         # Filled in on completion
         self.ended_at: str = ""
@@ -123,6 +125,10 @@ class ReconnectRecord:
             "attempts": self.attempts,
             "switched_to_browser": self.switched_to_browser,
             "duration_secs": self.duration_secs,
+            "resolution": (
+                f"{self.resolution[0]}x{self.resolution[1]}"
+                if self.resolution else ""
+            ),
         }
         if include_images:
             d["screenshot_start_b64"] = self.screenshot_start_b64

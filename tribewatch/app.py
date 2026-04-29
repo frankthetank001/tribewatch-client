@@ -425,10 +425,17 @@ class TribeWatchApp:
     # -- Dynamic bbox preset switching -------------------------------------
 
     def _check_resolution_scaling(self) -> None:
-        """Check game resolution and swap to preset bboxes if it changed."""
-        from tribewatch.server_id import get_game_resolution
+        """Check game resolution and swap to preset bboxes if it changed.
 
-        game_res = get_game_resolution()
+        Prefers the capture path's actual ``GetClientRect`` size — that
+        reflects what the GPU is rendering and tracks OS-forced resolution
+        changes (monitor disconnect, RDP) that GameUserSettings.ini misses.
+        Falls back to the .ini only before any capture has happened.
+        """
+        game_res = getattr(self.capture, "last_window_size", None)
+        if not game_res:
+            from tribewatch.server_id import get_game_resolution
+            game_res = get_game_resolution()
         if not game_res:
             return
         if game_res == getattr(self, "_last_game_resolution", None):
