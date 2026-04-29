@@ -694,10 +694,21 @@ def _warn_if_exclusive_fullscreen() -> None:
         "be unreliable. Recommended: Settings → Video → 'Fullscreen "
         "Windowed' (borderless).",
     )
+    # Use a native Win32 MessageBox rather than the tkinter overlay
+    # dialog: tkinter Toplevel windows can't render over an exclusive-
+    # fullscreen DirectX surface (same OS-level Z-order limitation that
+    # the warning itself describes), so the dialog meant to flag the
+    # problem would be invisible behind the very mode it's warning
+    # about. MessageBoxW has system-level priority — Windows will
+    # demote the fullscreen game to show it.
     try:
-        from tribewatch.overlay_ui import show_action_dialog
-        show_action_dialog(
-            "TribeWatch — Display Mode Warning",
+        import ctypes
+        MB_OK = 0x0
+        MB_ICONWARNING = 0x30
+        MB_TOPMOST = 0x40000
+        MB_SETFOREGROUND = 0x10000
+        ctypes.windll.user32.MessageBoxW(
+            0,
             (
                 "ARK is currently in exclusive Fullscreen mode.\n\n"
                 "TribeWatch works best in 'Fullscreen Windowed' "
@@ -707,8 +718,8 @@ def _warn_if_exclusive_fullscreen() -> None:
                 "To fix: ARK → Settings → Video → set "
                 "Window Mode to 'Fullscreen Windowed', then Apply."
             ),
-            [("Continue anyway", "ok")],
-            "ok",
+            "TribeWatch — Display Mode Warning",
+            MB_OK | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND,
         )
     except Exception:
         log.debug("Fullscreen warning dialog failed", exc_info=True)
