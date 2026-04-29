@@ -488,9 +488,10 @@ def _apply_resolution_preset(cfg: object) -> bool:
     log = logging.getLogger(__name__)
     try:
         from tribewatch.calibrate import derive_preset, is_verified_resolution
-        from tribewatch.server_id import get_game_resolution
+        from tribewatch.capture import get_active_resolution
 
-        resolution = get_game_resolution()
+        window_title = getattr(cfg.general, "window_title", "ArkAscended")
+        resolution = get_active_resolution(window_title=window_title)
         cal_res = getattr(cfg.general, "calibration_resolution", None)
 
         if resolution is None:
