@@ -427,15 +427,17 @@ class TribeWatchApp:
     def _check_resolution_scaling(self) -> None:
         """Check game resolution and swap to preset bboxes if it changed.
 
-        Prefers the capture path's actual ``GetClientRect`` size — that
-        reflects what the GPU is rendering and tracks OS-forced resolution
-        changes (monitor disconnect, RDP) that GameUserSettings.ini misses.
-        Falls back to the .ini only before any capture has happened.
+        Uses ``capture.last_window_size`` as the cached fast path (set
+        on every successful window grab), and falls back to the shared
+        ``get_active_resolution`` helper otherwise — same source the
+        startup path (``__main__._apply_resolution_preset``) uses, so
+        the two never disagree about which preset is current.
         """
         game_res = getattr(self.capture, "last_window_size", None)
         if not game_res:
-            from tribewatch.server_id import get_game_resolution
-            game_res = get_game_resolution()
+            from tribewatch.capture import get_active_resolution
+            window_title = getattr(self.config.general, "window_title", "ArkAscended")
+            game_res = get_active_resolution(window_title=window_title)
         if not game_res:
             return
         if game_res == getattr(self, "_last_game_resolution", None):

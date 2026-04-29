@@ -58,23 +58,47 @@ def is_verified_resolution(resolution: tuple[int, int]) -> bool:
 def derive_preset(resolution: tuple[int, int]) -> dict[str, list[int]]:
     """Compute bboxes for *resolution* by scaling the 1920x1080 baseline.
 
-    Vertical coordinates scale with the target height. Horizontal
-    coordinates scale with the same factor (preserving the 16:9 inner
-    HUD width) and then receive a centering offset for non-16:9 widths.
+    ARK's HUD is a 16:9 inner viewport centered inside the window:
+      * Wider-than-16:9 (e.g. ultrawide 21:9) → pillarboxed; the inner
+        viewport sits at full window height and gets black bars on the
+        left and right.
+      * Narrower-than-16:9 (e.g. 1360x768 ≈ 1.77, or 1280x800 = 1.6)
+        → letterboxed; the inner viewport sits at full window width
+        and gets bars on top and bottom.
+      * Exactly 16:9 → no bars, the whole window is the inner viewport.
+
+    The previous formula always assumed pillarbox geometry, which
+    produced negative ``offset_x`` for narrower-than-16:9 ratios — close
+    enough to harmless for 1360x768 (≈2 px error) but visibly wrong for
+    something like 1280x800 (≈70 px error). Branch on aspect to compute
+    the right one.
     """
     W, H = int(resolution[0]), int(resolution[1])
     bw, bh = _BASELINE_RES
-    scale = H / bh
-    inner_w = round(H * bw / bh)
-    offset_x = (W - inner_w) / 2
+
+    target_aspect = W / H if H else 0
+    baseline_aspect = bw / bh
+
+    if target_aspect >= baseline_aspect:
+        # Pillarbox: inner 16:9 viewport at the full target height.
+        scale = H / bh
+        inner_w = round(H * bw / bh)
+        offset_x = (W - inner_w) / 2
+        offset_y = 0.0
+    else:
+        # Letterbox: inner 16:9 viewport at the full target width.
+        scale = W / bw
+        inner_h = round(W * bh / bw)
+        offset_x = 0.0
+        offset_y = (H - inner_h) / 2
 
     out: dict[str, list[int]] = {}
     for region, (x1, y1, x2, y2) in _BASELINE_BBOXES.items():
         out[region] = [
             int(round(x1 * scale + offset_x)),
-            int(round(y1 * scale)),
+            int(round(y1 * scale + offset_y)),
             int(round(x2 * scale + offset_x)),
-            int(round(y2 * scale)),
+            int(round(y2 * scale + offset_y)),
         ]
     return out
 

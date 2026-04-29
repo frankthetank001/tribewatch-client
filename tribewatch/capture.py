@@ -203,6 +203,35 @@ def send_click(title: str, client_x: int, client_y: int) -> bool:
     return True
 
 
+def get_active_resolution(window_title: str = "ArkAscended") -> tuple[int, int] | None:
+    """Return the resolution that should drive bbox preset selection.
+
+    Single source of truth so the startup preset path
+    (``__main__._apply_resolution_preset``) and the heartbeat path
+    (``app._check_resolution_scaling``) can never disagree:
+
+      1. Locate the game window by title and read its actual client-area
+         size via ``GetClientRect``. This is what the GPU is rendering
+         and what subsequent captures will be cropped against.
+      2. Fall back to ``GameUserSettings.ini``'s ``ResolutionSizeX/Y``
+         only when no window can be found (e.g. TribeWatch launched
+         before ARK).
+
+    Returns ``(width, height)`` or ``None`` if neither source resolves.
+    """
+    if _IS_WIN32 and window_title:
+        hwnd = _find_window_by_title(window_title)
+        if hwnd:
+            size = get_window_client_size(hwnd)
+            if size:
+                return size
+    try:
+        from tribewatch.server_id import get_game_resolution
+        return get_game_resolution()
+    except Exception:
+        return None
+
+
 def get_window_client_size(hwnd: int) -> tuple[int, int] | None:
     """Return the actual rendered ``(width, height)`` of a window's client area.
 
