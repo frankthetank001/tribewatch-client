@@ -202,6 +202,29 @@ def send_click(title: str, client_x: int, client_y: int) -> bool:
     return True
 
 
+def get_window_client_size(hwnd: int) -> tuple[int, int] | None:
+    """Return the actual rendered ``(width, height)`` of a window's client area.
+
+    Reflects what the GPU is actually drawing — works in windowed and
+    exclusive-fullscreen alike, and tracks resolution changes forced by
+    the OS (e.g. monitor disconnect, RDP, GPU driver event) which the
+    GameUserSettings.ini does not.
+    """
+    if not _IS_WIN32 or not hwnd:
+        return None
+    try:
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        rect = (ctypes.c_long * 4)()
+        if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+            return None
+        w, h = rect[2], rect[3]
+        if w <= 0 or h <= 0:
+            return None
+        return (int(w), int(h))
+    except Exception:
+        return None
+
+
 def _grab_window(hwnd: int, bbox: list[int] | None = None) -> Image.Image | None:
     """Capture a window's client area via PrintWindow.
 
@@ -320,6 +343,11 @@ class ScreenCapture:
         self.monitor = monitor
         self._window_title = window_title
         self._hwnd: int | None = None
+        # Last observed client-area size of the captured window. Updated
+        # on every successful window-mode grab; preferred over
+        # GameUserSettings.ini for resolution-change detection because it
+        # reflects the actual rendered pixel size.
+        self.last_window_size: tuple[int, int] | None = None
 
         # Window capture mode
         if window_title:
@@ -383,6 +411,9 @@ class ScreenCapture:
                 return None
             log.info("Window re-found: hwnd=%s", self._hwnd)
 
+        size = get_window_client_size(self._hwnd)
+        if size:
+            self.last_window_size = size
         return _grab_window(self._hwnd, self.bbox)
 
     # -- Screen capture paths -------------------------------------------------
