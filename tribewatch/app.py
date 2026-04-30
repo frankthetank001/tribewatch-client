@@ -347,6 +347,48 @@ class TribeWatchApp:
             log.debug("Esc menu OCR check failed", exc_info=True)
             return False
 
+    async def _check_log_header_now(self) -> bool:
+        """Run an immediate grab+OCR on the tribe-log bbox and return
+        True iff the LOG header is currently visible.
+
+        The periodic ``_capture_cycle`` updates ``_log_header_visible``
+        only every ``tribe_log.interval`` seconds, so a fixed sleep in
+        ``refresh_tribe_log`` can read a stale flag and decide L failed
+        when it actually opened the log a moment ago. This helper does
+        an inline check so the refresh loop can poll the *current*
+        state without waiting for the bg cycle.
+
+        Mirrors the OCR header detection in ``_capture_cycle`` (text
+        starts with ``LOG``). Updates ``_log_header_visible`` and the
+        related freshness fields when True so the rest of the app sees
+        the same state — but does NOT dispatch events (the bg cycle
+        owns parsing/dedup/dispatch).
+
+        Returns False on any failure.
+        """
+        try:
+            from tribewatch.ocr_engine import recognize
+
+            img = self.capture.grab()
+            if img is None:
+                return False
+            text = await recognize(
+                img,
+                engine=self.config.tribe_log.ocr_engine,
+                upscale=self.config.tribe_log.upscale,
+                tesseract_path=self.config.tribe_log.tesseract_path,
+            )
+            visible = bool(text and text.lstrip().upper().startswith("LOG"))
+            if visible:
+                self._log_header_visible = True
+                if self._log_visible_since is None:
+                    self._log_visible_since = time.time()
+                self._last_log_seen_at = time.time()
+            return visible
+        except Exception:
+            log.debug("Inline tribe log header check failed", exc_info=True)
+            return False
+
     async def _is_death_screen(self) -> bool:
         """Return True if the ARK death/respawn screen is visible.
 
@@ -1056,31 +1098,66 @@ class TribeWatchApp:
                 send_key(window_title, "escape")
                 await asyncio.sleep(check_wait)
 
-            # Try L a few times before giving up — a single missed
-            # keystroke shouldn't immediately escalate to auto-reconnect.
-            _L_ATTEMPTS = 3
-            for attempt in range(1, _L_ATTEMPTS + 1):
+            # Active polling instead of a single fixed-wait check.
+            #
+            # The previous logic pressed L, slept 6s, then read
+            # ``_log_header_visible`` (which the bg OCR cycle updates
+            # every ``interval`` seconds). That race produced two
+            # failure modes:
+            #   1. The flag was stale because the most recent bg cycle
+            #      captured before ARK finished rendering the log, so
+            #      we falsely escalated.
+            #   2. L is a toggle in ARK — pressing it again on attempt
+            #      2 closed the just-opened log, so the system fought
+            #      itself for 3 attempts and then auto-reconnected.
+            #
+            # Now: press L *once* per attempt and poll
+            # ``_check_log_header_now`` (inline grab+OCR) every ~1s
+            # for up to ``poll_budget`` seconds. As soon as the header
+            # is visible, return success — typically within 2-3s.
+            # Only retry L (max 1 extra time) if the budget expires
+            # AND a pause menu is present (genuine missed keystroke).
+            _MAX_L_PRESSES = 2
+            _POLL_INTERVAL = 1.0
+            poll_budget = max(check_wait * 2, 12.0)
+            for press in range(1, _MAX_L_PRESSES + 1):
                 log.info(
-                    "Tribe log refresh: pressing L to reopen tribe log (attempt %d/%d)",
-                    attempt, _L_ATTEMPTS,
+                    "Tribe log refresh: pressing L to reopen tribe log "
+                    "(press %d/%d, polling up to %.0fs)",
+                    press, _MAX_L_PRESSES, poll_budget,
                 )
                 send_key(window_title, "l")
-                await asyncio.sleep(check_wait)
-                if self._log_header_visible:
-                    log.info("Tribe log refresh: tribe log reopened successfully")
-                    return True
-                # If a stray Esc menu appeared between attempts, dismiss
-                # it before retrying or L will land in the menu again.
-                if await self._is_esc_menu_open():
+                # Tiny initial settle so the very first poll doesn't
+                # OCR a frame mid-fade-in.
+                await asyncio.sleep(0.5)
+                deadline = time.monotonic() + poll_budget
+                while time.monotonic() < deadline:
+                    if await self._check_log_header_now():
+                        elapsed = poll_budget - (deadline - time.monotonic())
+                        log.info(
+                            "Tribe log refresh: tribe log reopened "
+                            "successfully (after %.1fs)", elapsed,
+                        )
+                        return True
+                    await asyncio.sleep(_POLL_INTERVAL)
+                # Budget exhausted — only retry L if the pause menu is
+                # the reason (i.e. the keystroke truly didn't reach
+                # the game). Otherwise another L would just toggle the
+                # log closed.
+                if press < _MAX_L_PRESSES and await self._is_esc_menu_open():
                     log.info(
-                        "Tribe log refresh: pause menu detected between L attempts, dismissing"
+                        "Tribe log refresh: pause menu detected after "
+                        "L poll, dismissing and retrying"
                     )
                     send_key(window_title, "escape")
-                    await asyncio.sleep(check_wait)
+                    await asyncio.sleep(1.0)
+                else:
+                    break
 
             log.warning(
-                "Tribe log refresh: tribe log NOT visible after %d L attempts — triggering auto-reconnect",
-                _L_ATTEMPTS,
+                "Tribe log refresh: tribe log NOT visible after %d L press(es) "
+                "with %.0fs polling — triggering auto-reconnect",
+                press, poll_budget,
             )
             if await self._is_death_screen():
                 self._handle_character_death()
