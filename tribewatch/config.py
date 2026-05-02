@@ -17,22 +17,18 @@ class TribeLogConfig:
     ocr_engine: str = "paddleocr"  # winrt / tesseract / easyocr / paddleocr
     upscale: int = 2
     tesseract_path: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-    # While the screen is changing (active play), run a slow-cadence OCR
-    # peek every N seconds so we still notice the tribe log being opened
-    # without doing full OCR every cycle. 0 disables peeks during motion.
-    active_play_peek_interval: float = 8.0
-    # Pixel-change percentage above which a frame is considered "moving"
-    # (i.e. the user is actively playing). Lower = more sensitive to
-    # subtle motion (HUD blinks, water shimmer); higher = only flags
-    # bigger camera moves. Default 2.0%.  This is the EXIT threshold
-    # (below this = still).
+    # Pixel-change percentage below which a frame is considered "still".
+    # No longer drives active_play (now done via OS signals — see
+    # is_actively_playing in capture.py); used solely by the long-idle
+    # recovery monitor to decide when the screen has been static long
+    # enough to warrant trying to reopen the tribe log.
     active_play_threshold: float = 2.0
-    # Entry threshold: a frame must exceed THIS to flag active_play
-    # True.  Having entry > exit gives hysteresis so main-menu
-    # animations (low-level pulsing / cursor shimmer) don't latch the
-    # flag True indefinitely.  Default 8.0% — gameplay camera motion
-    # easily clears this, menu idle motion typically does not.
-    active_play_entry_threshold: float = 8.0
+    # Seconds the user must be idle (no keyboard/mouse input) before
+    # active_play flips back to False, even if ARK is still the
+    # foreground window. Lower = monitoring resumes faster after AFK;
+    # higher = stays in "playing" mode through longer in-game pauses
+    # (e.g. watching crafting bars).
+    active_play_idle_seconds: float = 5.0
 
 
 @dataclass

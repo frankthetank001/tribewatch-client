@@ -744,8 +744,8 @@ class TribeWatchApp:
                 "active_play_threshold": getattr(
                     self.config.tribe_log, "active_play_threshold", 2.0,
                 ),
-                "active_play_peek_interval": getattr(
-                    self.config.tribe_log, "active_play_peek_interval", 8.0,
+                "active_play_idle_seconds": getattr(
+                    self.config.tribe_log, "active_play_idle_seconds", 5.0,
                 ),
             },
         }
