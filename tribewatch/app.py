@@ -194,6 +194,14 @@ class TribeWatchApp:
         self._events_today_count: int = 0
         self._total_events_count: int = 0
 
+        # Image-hash short-circuit for cycles where the captured region
+        # rarely changes between cycles (tribe member panel, parasaur
+        # notification panel). On match we skip OCR + parse and reuse
+        # the existing parsed state — ONNX inference is the dominant
+        # cost in the OCR thread, so this is the biggest CPU win.
+        self._tribe_img_hash: bytes | None = None
+        self._parasaur_img_hash: bytes | None = None
+
         # Tribe log monitoring awareness
         self._last_log_seen_at: float | None = None
         self._log_header_visible: bool = False
@@ -1443,21 +1451,26 @@ class TribeWatchApp:
             if self._active_play:
                 return
 
-        # Save last capture for debugging
+        # Save last capture for debugging — only when DEBUG logging is
+        # enabled. PNG encoding was ~28% of MainThread work in profiles
+        # (one full encode per cycle, every cycle), unconditionally.
+        debug_captures = log.isEnabledFor(logging.DEBUG)
         _debug_dir = Path("debug")
-        _debug_dir.mkdir(exist_ok=True)
-        try:
-            img.save(_debug_dir / "last_capture.png")
-        except Exception:
-            pass
+        if debug_captures:
+            _debug_dir.mkdir(exist_ok=True)
+            try:
+                img.save(_debug_dir / "last_capture.png")
+            except Exception:
+                pass
 
         # Save preprocessed image for debugging
         from tribewatch.ocr_engine import _preprocess
-        try:
-            preprocessed = _preprocess(img, self.config.tribe_log.upscale)
-            preprocessed.save(_debug_dir / "last_preprocessed.png")
-        except Exception:
-            pass
+        if debug_captures:
+            try:
+                preprocessed = _preprocess(img, self.config.tribe_log.upscale)
+                preprocessed.save(_debug_dir / "last_preprocessed.png")
+            except Exception:
+                pass
 
         # OCR the image first — we detect the LOG header from the text,
         # not from pixel heuristics (which false-positive on bright game scenes).
@@ -1471,10 +1484,11 @@ class TribeWatchApp:
         self._last_ocr_duration_ms = (time.monotonic() - ocr_start) * 1000
 
         # Save raw OCR text for debugging
-        try:
-            (_debug_dir / "last_ocr.txt").write_text(text, encoding="utf-8")
-        except Exception:
-            pass
+        if debug_captures:
+            try:
+                (_debug_dir / "last_ocr.txt").write_text(text, encoding="utf-8")
+            except Exception:
+                pass
 
         # Detect LOG header from OCR text — the tribe log always starts with "LOG"
         was_visible = self._log_header_visible
@@ -1593,18 +1607,34 @@ class TribeWatchApp:
             await self._check_parasaur_clears()
             return
 
-        # Save debug captures
-        _debug_dir = Path("debug")
-        _debug_dir.mkdir(exist_ok=True)
+        # Image-hash short-circuit. The parasaur notification panel is
+        # blank most of the time; OCR-ing identical blank frames is the
+        # bulk of the work this loop does. On a hit, skip the OCR /
+        # parse / event-dispatch block but still run the grace + clear
+        # checks (those are time-based, not image-based).
         try:
-            img.save(_debug_dir / "parasaur_capture.png")
+            import hashlib
+            img_hash = hashlib.blake2b(img.tobytes(), digest_size=8).digest()
         except Exception:
-            pass
+            img_hash = None
+        if img_hash is not None and img_hash == self._parasaur_img_hash:
+            await self._check_parasaur_grace()
+            await self._check_parasaur_clears()
+            return
+        self._parasaur_img_hash = img_hash
 
-        try:
-            img.save(_debug_dir / "parasaur_preprocessed.png")
-        except Exception:
-            pass
+        # Save debug captures (only when DEBUG logging is on)
+        if log.isEnabledFor(logging.DEBUG):
+            _debug_dir = Path("debug")
+            _debug_dir.mkdir(exist_ok=True)
+            try:
+                img.save(_debug_dir / "parasaur_capture.png")
+            except Exception:
+                pass
+            try:
+                img.save(_debug_dir / "parasaur_preprocessed.png")
+            except Exception:
+                pass
 
         # Resolve per-window engine (fallback to global)
         parasaur_engine = self.config.parasaur.ocr_engine or self.config.tribe_log.ocr_engine
@@ -1619,10 +1649,13 @@ class TribeWatchApp:
         )
 
         # Save raw OCR text
-        try:
-            (_debug_dir / "parasaur_ocr.txt").write_text(text, encoding="utf-8")
-        except Exception:
-            pass
+        if log.isEnabledFor(logging.DEBUG):
+            try:
+                _debug_dir = Path("debug")
+                _debug_dir.mkdir(exist_ok=True)
+                (_debug_dir / "parasaur_ocr.txt").write_text(text, encoding="utf-8")
+            except Exception:
+                pass
 
         # Process join/leave notifications from the same OCR text
         if text.strip():
@@ -1988,6 +2021,20 @@ class TribeWatchApp:
         if img is None:
             return
 
+        # Image-hash short-circuit. The tribe member panel only changes
+        # when someone goes online/offline — between such transitions
+        # the bytes are identical and OCR would produce the same parse.
+        # Skip the entire OCR/parse/dispatch path on a hit (the previous
+        # cycle already updated _tribe_info accordingly).
+        try:
+            import hashlib
+            img_hash = hashlib.blake2b(img.tobytes(), digest_size=8).digest()
+        except Exception:
+            img_hash = None
+        if img_hash is not None and img_hash == self._tribe_img_hash:
+            return
+        self._tribe_img_hash = img_hash
+
         # Resolve per-window engine (fallback to global)
         engine = self.config.tribe.ocr_engine or self.config.tribe_log.ocr_engine
 
@@ -2006,21 +2053,23 @@ class TribeWatchApp:
             preprocess=False,  # already preprocessed
         )
 
-        # Save debug artifacts
-        _debug_dir = Path("debug")
-        _debug_dir.mkdir(exist_ok=True)
-        try:
-            img.save(_debug_dir / "tribe_capture.png")
-        except Exception:
-            pass
-        try:
-            preprocessed.save(_debug_dir / "tribe_preprocessed.png")
-        except Exception:
-            pass
-        try:
-            (_debug_dir / "tribe_ocr.txt").write_text(text, encoding="utf-8")
-        except Exception:
-            pass
+        # Save debug artifacts (only when DEBUG logging is on — these
+        # PNG encodes were a measurable share of MainThread work).
+        if log.isEnabledFor(logging.DEBUG):
+            _debug_dir = Path("debug")
+            _debug_dir.mkdir(exist_ok=True)
+            try:
+                img.save(_debug_dir / "tribe_capture.png")
+            except Exception:
+                pass
+            try:
+                preprocessed.save(_debug_dir / "tribe_preprocessed.png")
+            except Exception:
+                pass
+            try:
+                (_debug_dir / "tribe_ocr.txt").write_text(text, encoding="utf-8")
+            except Exception:
+                pass
 
         if not text.strip():
             await self._handle_tribe_window_lost()
