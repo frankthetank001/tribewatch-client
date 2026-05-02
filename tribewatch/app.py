@@ -1103,6 +1103,18 @@ class TribeWatchApp:
                 self._maybe_auto_reconnect("tribe_log_refresh_stuck")
                 return False
 
+            # If the user started playing during the post-Esc settle
+            # window, bail out before pressing L — sending L into the
+            # middle of their gameplay would pop the tribe log over
+            # their view. The next periodic refresh (20-25 min) will
+            # reopen monitoring once they're idle again.
+            if not manual and self._active_play:
+                log.info(
+                    "Tribe log refresh: user started playing during settle "
+                    "— aborting refresh (next attempt in 20-25 min)"
+                )
+                return False
+
             # Esc may have opened the pause menu (either because the log
             # wasn't open and Esc went to the menu, or because the menu
             # was already up). Either way, dismiss it before pressing L.
@@ -1152,6 +1164,16 @@ class TribeWatchApp:
                             "successfully (after %.1fs)", elapsed,
                         )
                         return True
+                    # If the user started playing mid-poll, stop polling
+                    # and don't retry L. Pressing L again would toggle
+                    # the just-opened log closed if it's coming up — and
+                    # any further keystrokes interfere with their game.
+                    if not manual and self._active_play:
+                        log.info(
+                            "Tribe log refresh: user started playing "
+                            "mid-poll — aborting refresh"
+                        )
+                        return False
                     await asyncio.sleep(_POLL_INTERVAL)
                 # Budget exhausted — only retry L if the pause menu is
                 # the reason (i.e. the keystroke truly didn't reach
