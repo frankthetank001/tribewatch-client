@@ -1978,6 +1978,11 @@ class TribeWatchApp:
         """Single tribe window capture → OCR → parse → transition detect → persist → relay."""
         if self._paused or self._tribe_capture is None:
             return
+        # Skip while the user is actively playing — member online/offline
+        # status isn't time-critical mid-game, and PrintWindow + OCR
+        # contend with the GPU. Mirrors the gate parasaur already has.
+        if self._active_play:
+            return
 
         img = self._tribe_capture.grab()
         if img is None:
