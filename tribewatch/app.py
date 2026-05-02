@@ -194,6 +194,22 @@ class TribeWatchApp:
         self._events_today_count: int = 0
         self._total_events_count: int = 0
 
+        # Image-hash short-circuit for cycles where the captured region
+        # rarely changes between cycles (tribe member panel, parasaur
+        # notification panel, and the tribe-log capture during idle /
+        # menu / static screens). On match we skip OCR + parse and
+        # reuse the existing parsed state — ONNX inference is the
+        # dominant cost in the OCR thread, so this is the biggest CPU
+        # win available without changing engines.
+        #
+        # Safe for tribe-log capture because a new event scrolls the
+        # existing entries down by one row, which changes the bytes →
+        # hash misses → OCR runs → event captured. The dedup layer
+        # handles the rare "duplicate text" case.
+        self._tribe_img_hash: bytes | None = None
+        self._parasaur_img_hash: bytes | None = None
+        self._capture_img_hash: bytes | None = None
+
         # Tribe log monitoring awareness
         self._last_log_seen_at: float | None = None
         self._log_header_visible: bool = False
@@ -218,10 +234,7 @@ class TribeWatchApp:
         self._prev_thumb = None  # previous capture thumbnail for change detection
         self._screen_still_since: float | None = None  # time.time() when screen became static
         self._screen_change_pct: float = 100.0  # last measured change % (0-100)
-        self._active_play: bool = False  # True when screen is changing (user playing)
-        self._active_play_still_count: int = 0  # consecutive still frames before clearing active_play
-        self._ACTIVE_PLAY_COOLDOWN: int = 5  # require 5 consecutive still frames (~10s) to exit active play
-        self._active_play_last_peek: float = 0.0  # monotonic time of last OCR peek during active play
+        self._active_play: bool = False  # True iff ARK foreground + recent input (OS gate)
         self._heartbeat_kick: asyncio.Event | None = None  # set to short-circuit heartbeat sleep
         self._idle_recovery_attempted: bool = False  # prevents repeated recovery attempts
         self._overlay = None  # StatusOverlay (set by __main__ if enabled)
@@ -731,8 +744,8 @@ class TribeWatchApp:
                 "active_play_threshold": getattr(
                     self.config.tribe_log, "active_play_threshold", 2.0,
                 ),
-                "active_play_peek_interval": getattr(
-                    self.config.tribe_log, "active_play_peek_interval", 8.0,
+                "active_play_idle_seconds": getattr(
+                    self.config.tribe_log, "active_play_idle_seconds", 5.0,
                 ),
             },
         }
@@ -1292,6 +1305,49 @@ class TribeWatchApp:
         if self._paused:
             return
 
+        # OS-signal active-play gate. If ARK is the foreground window and
+        # the user has provided input recently, they're actively playing —
+        # skip ALL work (no PrintWindow, no thumbnail diff, no OCR) to
+        # avoid contributing any GPU/CPU contention to the game's frame
+        # pipeline. The cycle resumes immediately the moment the user
+        # tabs away or stops providing input for the configured idle
+        # threshold (default ~5s).
+        from tribewatch.capture import is_actively_playing
+        idle_threshold_ms = int(
+            (getattr(self.config.tribe_log, "active_play_idle_seconds", 5.0) or 5.0)
+            * 1000
+        )
+        playing = is_actively_playing(
+            self.config.general.window_title, idle_threshold_ms=idle_threshold_ms,
+        )
+        was_active = self._active_play
+        if playing:
+            if not was_active:
+                self._active_play = True
+                log.info(
+                    "Active play detected (ARK foreground + recent input) — "
+                    "pausing tribe log & parasaur OCR",
+                )
+                self._log_header_visible = False
+                self._log_visible_since = None
+                if self._character_dead:
+                    log.info("Character death state cleared — active play detected")
+                    self._character_dead = False
+                self._kick_heartbeat()
+            # Refresh the in-game overlay every cycle so it reflects
+            # the current state ("Playing") even though we skip the
+            # capture/OCR work below. Cheap (no GPU calls) and ensures
+            # the overlay doesn't stay stuck on the previous label.
+            self._update_overlay()
+            return  # zero further capture work this cycle
+        if was_active:
+            # User just stopped playing (tabbed away or went idle). The
+            # rest of the cycle below will run normally and resume
+            # tribe-log monitoring.
+            self._active_play = False
+            log.info("Resumed monitoring — ARK no longer foreground or input idle")
+            self._kick_heartbeat()
+
         img = self.capture.grab()
         if img is None:
             was_visible = self._log_header_visible
@@ -1304,7 +1360,6 @@ class TribeWatchApp:
             # heartbeats and the dashboard continues to show "playing"
             # long after ARK has exited.
             self._active_play = False
-            self._active_play_still_count = 0
             self._screen_still_since = None
             if was_visible:
                 log.info("Tribe log lost — window not found")
@@ -1318,22 +1373,37 @@ class TribeWatchApp:
 
         self._last_capture_at = time.time()
 
-        # Pixel change detection for idle screen monitoring
+        # Image-hash short-circuit for OCR. If the bbox bytes are
+        # identical to the previous successful cycle, the OCR result
+        # would be the same — skip all three OCR call sites below
+        # (cooldown peek, active-play peek, main OCR) and return.
+        # Active-play hysteresis (motion-based, uses the thumbnail
+        # diff) still runs above this — gameplay motion is detected
+        # independently of OCR.
+        try:
+            import hashlib
+            img_hash = hashlib.blake2b(img.tobytes(), digest_size=8).digest()
+        except Exception:
+            img_hash = None
+        hash_changed = (img_hash is None) or (img_hash != self._capture_img_hash)
+        # Cache the new hash now (regardless of which OCR path runs
+        # below) so the next cycle compares against the current frame
+        # instead of an older one. OCR is deterministic on identical
+        # input, so caching before OCR is safe even if the OCR call
+        # later fails or returns garbage.
+        if img_hash is not None:
+            self._capture_img_hash = img_hash
+
+        # Pixel change detection — kept for the dashboard status and for
+        # _idle_screen_monitor's "screen has been static for X minutes"
+        # recovery path. No longer drives active_play (the OS-signal
+        # gate at the top of this function does).
         from PIL import ImageChops, ImageStat
         thumb = img.copy()
         thumb.thumbnail((160, 90))
-        # Exit / "still" threshold — below this the screen is considered idle.
         active_threshold = float(
             getattr(self.config.tribe_log, "active_play_threshold", 2.0) or 2.0
         )
-        # Entry threshold — must be crossed before we latch active_play
-        # True.  Hysteresis prevents main-menu animations from getting us
-        # stuck in "playing" forever.
-        entry_threshold = float(
-            getattr(self.config.tribe_log, "active_play_entry_threshold", 8.0) or 8.0
-        )
-        if entry_threshold < active_threshold:
-            entry_threshold = active_threshold
         if self._prev_thumb is not None and thumb.size == self._prev_thumb.size:
             diff = ImageChops.difference(thumb, self._prev_thumb)
             stat = ImageStat.Stat(diff)
@@ -1343,124 +1413,58 @@ class TribeWatchApp:
                 if self._screen_still_since is None:
                     self._screen_still_since = time.time()
             else:
-                self._screen_still_since = None  # screen is active
+                self._screen_still_since = None
         self._prev_thumb = thumb
 
-        # Per-cycle debug log of the numbers driving active_play so it's
-        # diagnosable when the state seems stuck (main-menu latch, etc).
-        # DEBUG every cycle + INFO once per minute so the numbers are
-        # visible at default log levels without spamming.
-        log.debug(
-            "screen change %.2f%% (active_play=%s still_count=%d entry=%.1f exit=%.1f)",
-            self._screen_change_pct, self._active_play,
-            self._active_play_still_count, entry_threshold, active_threshold,
-        )
+        # Once-per-minute diagnostic log
         _now = time.monotonic()
         _last = getattr(self, "_active_play_diag_last", 0.0)
         if _now - _last >= 60.0:
             self._active_play_diag_last = _now
             log.info(
-                "screen change %.2f%% (active_play=%s entry=%.1f exit=%.1f)",
+                "screen change %.2f%% (active_play=%s, OS-gated)",
                 self._screen_change_pct, self._active_play,
-                entry_threshold, active_threshold,
             )
 
-        # Active play detection — skip OCR when the screen is changing
-        # (user is actively playing). Tribe window captures (connect/disconnect)
-        # still run on their own 30s loop.
-        # Hysteresis: entry requires >= entry_threshold (default 8%),
-        # exit requires < active_threshold (default 2%) for 5 consecutive
-        # frames (~10s).  Main-menu low-level motion stays between these
-        # bands, so the flag doesn't latch True on a menu.
-        was_active = self._active_play
-        if not self._active_play:
-            screen_moving = self._screen_change_pct >= entry_threshold
-        else:
-            # Once active, any motion at or above the exit threshold
-            # counts as "still-counter reset" — we only leave active
-            # play after a sustained quiet period.
-            screen_moving = self._screen_change_pct >= active_threshold
-        if screen_moving:
-            self._active_play = True
-            self._active_play_still_count = 0
-        elif self._active_play:
-            self._active_play_still_count += 1
-            # Peek at OCR on every still frame to see if tribe log was opened
-            if self._active_play_still_count <= self._ACTIVE_PLAY_COOLDOWN:
-                try:
-                    text = await recognize(
-                        img,
-                        engine=self.config.tribe_log.ocr_engine,
-                        upscale=self.config.tribe_log.upscale,
-                        tesseract_path=self.config.tribe_log.tesseract_path,
-                    )
-                    if text and text.lstrip().upper().startswith("LOG"):
-                        log.info("Tribe log detected during active play cooldown — resuming immediately")
-                        self._active_play = False
-                        self._active_play_still_count = 0
-                except Exception:
-                    pass
-            if self._active_play and self._active_play_still_count >= self._ACTIVE_PLAY_COOLDOWN:
-                self._active_play = False
-                self._active_play_still_count = 0
-        if self._active_play and not was_active:
-            if self._character_dead:
-                log.info("Character death state cleared — active play detected")
-                self._character_dead = False
-            log.info("Active play detected (%.1f%% change) — pausing tribe log & parasaur OCR",
-                     self._screen_change_pct)
-            # Mark tribe log as not visible — we're no longer monitoring it
-            self._log_header_visible = False
-            self._log_visible_since = None
-            self._active_play_last_peek = time.monotonic()
-            self._kick_heartbeat()
-        elif not self._active_play and was_active:
-            log.info("Screen still for %ds — resuming tribe log & parasaur OCR",
-                     self._ACTIVE_PLAY_COOLDOWN * int(self.config.tribe_log.interval))
-            self._kick_heartbeat()
-        # Update overlay with current status
+        # _active_play is now driven solely by the OS-signal gate at
+        # the top of this function — if we got here, the user isn't
+        # actively playing, so we run the full monitoring cycle below.
+        # The thumbnail diff above still feeds _screen_change_pct and
+        # _screen_still_since for the dashboard status and the
+        # _idle_screen_monitor's "screen has been static for X minutes"
+        # recovery logic.
         self._update_overlay()
 
-        if self._active_play:
-            # Slow-cadence OCR peek during active play so we still notice the
-            # tribe log being opened mid-session, without doing full OCR every cycle.
-            peek_interval = float(getattr(self.config.tribe_log, "active_play_peek_interval", 0.0) or 0.0)
-            if peek_interval > 0 and (time.monotonic() - self._active_play_last_peek) >= peek_interval:
-                self._active_play_last_peek = time.monotonic()
-                try:
-                    peek_text = await recognize(
-                        img,
-                        engine=self.config.tribe_log.ocr_engine,
-                        upscale=self.config.tribe_log.upscale,
-                        tesseract_path=self.config.tribe_log.tesseract_path,
-                    )
-                    if peek_text and peek_text.lstrip().upper().startswith("LOG"):
-                        log.info("Tribe log detected during active play peek — resuming immediately")
-                        self._active_play = False
-                        self._active_play_still_count = 0
-                except Exception:
-                    log.debug("Active play peek OCR failed", exc_info=True)
-            if self._active_play:
-                return
-
-        # Save last capture for debugging
+        # Save last capture for debugging — only when DEBUG logging is
+        # enabled. PNG encoding was ~28% of MainThread work in profiles
+        # (one full encode per cycle, every cycle), unconditionally.
+        debug_captures = log.isEnabledFor(logging.DEBUG)
         _debug_dir = Path("debug")
-        _debug_dir.mkdir(exist_ok=True)
-        try:
-            img.save(_debug_dir / "last_capture.png")
-        except Exception:
-            pass
+        if debug_captures:
+            _debug_dir.mkdir(exist_ok=True)
+            try:
+                img.save(_debug_dir / "last_capture.png")
+            except Exception:
+                pass
 
         # Save preprocessed image for debugging
         from tribewatch.ocr_engine import _preprocess
-        try:
-            preprocessed = _preprocess(img, self.config.tribe_log.upscale)
-            preprocessed.save(_debug_dir / "last_preprocessed.png")
-        except Exception:
-            pass
+        if debug_captures:
+            try:
+                preprocessed = _preprocess(img, self.config.tribe_log.upscale)
+                preprocessed.save(_debug_dir / "last_preprocessed.png")
+            except Exception:
+                pass
 
         # OCR the image first — we detect the LOG header from the text,
         # not from pixel heuristics (which false-positive on bright game scenes).
+        # Skip when the bbox is byte-identical to the previous successful
+        # cycle: the OCR result would be identical, no new events, no
+        # change in log_header_visible. ONNX inference is the dominant
+        # CPU cost in the worker thread, so this is the biggest
+        # monitoring-mode win.
+        if not hash_changed:
+            return
         ocr_start = time.monotonic()
         text = await recognize(
             img,
@@ -1471,10 +1475,11 @@ class TribeWatchApp:
         self._last_ocr_duration_ms = (time.monotonic() - ocr_start) * 1000
 
         # Save raw OCR text for debugging
-        try:
-            (_debug_dir / "last_ocr.txt").write_text(text, encoding="utf-8")
-        except Exception:
-            pass
+        if debug_captures:
+            try:
+                (_debug_dir / "last_ocr.txt").write_text(text, encoding="utf-8")
+            except Exception:
+                pass
 
         # Detect LOG header from OCR text — the tribe log always starts with "LOG"
         was_visible = self._log_header_visible
@@ -1593,18 +1598,34 @@ class TribeWatchApp:
             await self._check_parasaur_clears()
             return
 
-        # Save debug captures
-        _debug_dir = Path("debug")
-        _debug_dir.mkdir(exist_ok=True)
+        # Image-hash short-circuit. The parasaur notification panel is
+        # blank most of the time; OCR-ing identical blank frames is the
+        # bulk of the work this loop does. On a hit, skip the OCR /
+        # parse / event-dispatch block but still run the grace + clear
+        # checks (those are time-based, not image-based).
         try:
-            img.save(_debug_dir / "parasaur_capture.png")
+            import hashlib
+            img_hash = hashlib.blake2b(img.tobytes(), digest_size=8).digest()
         except Exception:
-            pass
+            img_hash = None
+        if img_hash is not None and img_hash == self._parasaur_img_hash:
+            await self._check_parasaur_grace()
+            await self._check_parasaur_clears()
+            return
+        self._parasaur_img_hash = img_hash
 
-        try:
-            img.save(_debug_dir / "parasaur_preprocessed.png")
-        except Exception:
-            pass
+        # Save debug captures (only when DEBUG logging is on)
+        if log.isEnabledFor(logging.DEBUG):
+            _debug_dir = Path("debug")
+            _debug_dir.mkdir(exist_ok=True)
+            try:
+                img.save(_debug_dir / "parasaur_capture.png")
+            except Exception:
+                pass
+            try:
+                img.save(_debug_dir / "parasaur_preprocessed.png")
+            except Exception:
+                pass
 
         # Resolve per-window engine (fallback to global)
         parasaur_engine = self.config.parasaur.ocr_engine or self.config.tribe_log.ocr_engine
@@ -1619,10 +1640,13 @@ class TribeWatchApp:
         )
 
         # Save raw OCR text
-        try:
-            (_debug_dir / "parasaur_ocr.txt").write_text(text, encoding="utf-8")
-        except Exception:
-            pass
+        if log.isEnabledFor(logging.DEBUG):
+            try:
+                _debug_dir = Path("debug")
+                _debug_dir.mkdir(exist_ok=True)
+                (_debug_dir / "parasaur_ocr.txt").write_text(text, encoding="utf-8")
+            except Exception:
+                pass
 
         # Process join/leave notifications from the same OCR text
         if text.strip():
@@ -1978,10 +2002,29 @@ class TribeWatchApp:
         """Single tribe window capture → OCR → parse → transition detect → persist → relay."""
         if self._paused or self._tribe_capture is None:
             return
+        # Skip while the user is actively playing — member online/offline
+        # status isn't time-critical mid-game, and PrintWindow + OCR
+        # contend with the GPU. Mirrors the gate parasaur already has.
+        if self._active_play:
+            return
 
         img = self._tribe_capture.grab()
         if img is None:
             return
+
+        # Image-hash short-circuit. The tribe member panel only changes
+        # when someone goes online/offline — between such transitions
+        # the bytes are identical and OCR would produce the same parse.
+        # Skip the entire OCR/parse/dispatch path on a hit (the previous
+        # cycle already updated _tribe_info accordingly).
+        try:
+            import hashlib
+            img_hash = hashlib.blake2b(img.tobytes(), digest_size=8).digest()
+        except Exception:
+            img_hash = None
+        if img_hash is not None and img_hash == self._tribe_img_hash:
+            return
+        self._tribe_img_hash = img_hash
 
         # Resolve per-window engine (fallback to global)
         engine = self.config.tribe.ocr_engine or self.config.tribe_log.ocr_engine
@@ -2001,21 +2044,23 @@ class TribeWatchApp:
             preprocess=False,  # already preprocessed
         )
 
-        # Save debug artifacts
-        _debug_dir = Path("debug")
-        _debug_dir.mkdir(exist_ok=True)
-        try:
-            img.save(_debug_dir / "tribe_capture.png")
-        except Exception:
-            pass
-        try:
-            preprocessed.save(_debug_dir / "tribe_preprocessed.png")
-        except Exception:
-            pass
-        try:
-            (_debug_dir / "tribe_ocr.txt").write_text(text, encoding="utf-8")
-        except Exception:
-            pass
+        # Save debug artifacts (only when DEBUG logging is on — these
+        # PNG encodes were a measurable share of MainThread work).
+        if log.isEnabledFor(logging.DEBUG):
+            _debug_dir = Path("debug")
+            _debug_dir.mkdir(exist_ok=True)
+            try:
+                img.save(_debug_dir / "tribe_capture.png")
+            except Exception:
+                pass
+            try:
+                preprocessed.save(_debug_dir / "tribe_preprocessed.png")
+            except Exception:
+                pass
+            try:
+                (_debug_dir / "tribe_ocr.txt").write_text(text, encoding="utf-8")
+            except Exception:
+                pass
 
         if not text.strip():
             await self._handle_tribe_window_lost()

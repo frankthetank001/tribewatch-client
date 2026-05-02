@@ -135,6 +135,56 @@ def is_window_foreground(title: str) -> bool:
     return user32.GetForegroundWindow() == hwnd
 
 
+def get_idle_time_ms() -> int:
+    """Return ms since the user's last keyboard/mouse input, system-wide.
+
+    Wraps ``GetLastInputInfo`` + ``GetTickCount``. Used by the active-play
+    detector to know whether the user is currently interacting with the
+    machine — combined with ``is_window_foreground(ark)`` it tells us
+    "user is playing ARK right now" without any screen capture / GPU
+    work, which is the only way to fully eliminate FPS hitches from
+    TribeWatch during gameplay.
+
+    Caveat: covers mouse/keyboard only — gamepad input is not tracked
+    by GetLastInputInfo, so controller-only players would be detected
+    as idle. Returns 0 on non-Windows or any failure.
+    """
+    if not _IS_WIN32:
+        return 0
+    try:
+        class _LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+        lii = _LASTINPUTINFO()
+        lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        if not user32.GetLastInputInfo(ctypes.byref(lii)):
+            return 0
+        # GetTickCount() and dwTime are both 32-bit; their unsigned
+        # subtraction yields the elapsed ms even across wrap (~49 days).
+        now = kernel32.GetTickCount()
+        return int((now - lii.dwTime) & 0xFFFFFFFF)
+    except Exception:
+        return 0
+
+
+def is_actively_playing(window_title: str, idle_threshold_ms: int = 5000) -> bool:
+    """Return True iff the user is actively interacting with *window_title*.
+
+    Definition: the target window is the foreground window AND the user
+    has provided keyboard/mouse input within the last ``idle_threshold_ms``
+    milliseconds. Both ~1 µs OS calls; no screen capture, no GPU work.
+
+    Used as the gate to skip all per-cycle work (PrintWindow, OCR,
+    parsing) while the user is mid-gameplay — the only signal cheap
+    enough to poll continuously without contributing to game frame
+    hitches.
+    """
+    if not is_window_foreground(window_title):
+        return False
+    return get_idle_time_ms() < idle_threshold_ms
+
+
 def send_key(title: str, key: str) -> bool:
     """Send a key press to a window via PostMessage (no focus steal).
 
