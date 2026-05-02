@@ -1334,7 +1334,12 @@ class TribeWatchApp:
                     log.info("Character death state cleared — active play detected")
                     self._character_dead = False
                 self._kick_heartbeat()
-            return  # zero further work this cycle
+            # Refresh the in-game overlay every cycle so it reflects
+            # the current state ("Playing") even though we skip the
+            # capture/OCR work below. Cheap (no GPU calls) and ensures
+            # the overlay doesn't stay stuck on the previous label.
+            self._update_overlay()
+            return  # zero further capture work this cycle
         if was_active:
             # User just stopped playing (tabbed away or went idle). The
             # rest of the cycle below will run normally and resume
