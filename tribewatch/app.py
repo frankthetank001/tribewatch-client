@@ -196,11 +196,19 @@ class TribeWatchApp:
 
         # Image-hash short-circuit for cycles where the captured region
         # rarely changes between cycles (tribe member panel, parasaur
-        # notification panel). On match we skip OCR + parse and reuse
-        # the existing parsed state — ONNX inference is the dominant
-        # cost in the OCR thread, so this is the biggest CPU win.
+        # notification panel, and the tribe-log capture during idle /
+        # menu / static screens). On match we skip OCR + parse and
+        # reuse the existing parsed state — ONNX inference is the
+        # dominant cost in the OCR thread, so this is the biggest CPU
+        # win available without changing engines.
+        #
+        # Safe for tribe-log capture because a new event scrolls the
+        # existing entries down by one row, which changes the bytes →
+        # hash misses → OCR runs → event captured. The dedup layer
+        # handles the rare "duplicate text" case.
         self._tribe_img_hash: bytes | None = None
         self._parasaur_img_hash: bytes | None = None
+        self._capture_img_hash: bytes | None = None
 
         # Tribe log monitoring awareness
         self._last_log_seen_at: float | None = None
@@ -1326,6 +1334,27 @@ class TribeWatchApp:
 
         self._last_capture_at = time.time()
 
+        # Image-hash short-circuit for OCR. If the bbox bytes are
+        # identical to the previous successful cycle, the OCR result
+        # would be the same — skip all three OCR call sites below
+        # (cooldown peek, active-play peek, main OCR) and return.
+        # Active-play hysteresis (motion-based, uses the thumbnail
+        # diff) still runs above this — gameplay motion is detected
+        # independently of OCR.
+        try:
+            import hashlib
+            img_hash = hashlib.blake2b(img.tobytes(), digest_size=8).digest()
+        except Exception:
+            img_hash = None
+        hash_changed = (img_hash is None) or (img_hash != self._capture_img_hash)
+        # Cache the new hash now (regardless of which OCR path runs
+        # below) so the next cycle compares against the current frame
+        # instead of an older one. OCR is deterministic on identical
+        # input, so caching before OCR is safe even if the OCR call
+        # later fails or returns garbage.
+        if img_hash is not None:
+            self._capture_img_hash = img_hash
+
         # Pixel change detection for idle screen monitoring
         from PIL import ImageChops, ImageStat
         thumb = img.copy()
@@ -1393,8 +1422,12 @@ class TribeWatchApp:
             self._active_play_still_count = 0
         elif self._active_play:
             self._active_play_still_count += 1
-            # Peek at OCR on every still frame to see if tribe log was opened
-            if self._active_play_still_count <= self._ACTIVE_PLAY_COOLDOWN:
+            # Peek at OCR on every still frame to see if tribe log was
+            # opened. Skip when the bbox is byte-identical to the last
+            # successful OCR — opening the log changes the pixels, so
+            # a hash hit means the log isn't there now (or wasn't last
+            # time either).
+            if self._active_play_still_count <= self._ACTIVE_PLAY_COOLDOWN and hash_changed:
                 try:
                     text = await recognize(
                         img,
@@ -1432,8 +1465,11 @@ class TribeWatchApp:
         if self._active_play:
             # Slow-cadence OCR peek during active play so we still notice the
             # tribe log being opened mid-session, without doing full OCR every cycle.
+            # Hash-gated: opening the log changes the pixels, so when the
+            # bbox is byte-identical to the previous cycle we can skip
+            # the OCR entirely.
             peek_interval = float(getattr(self.config.tribe_log, "active_play_peek_interval", 0.0) or 0.0)
-            if peek_interval > 0 and (time.monotonic() - self._active_play_last_peek) >= peek_interval:
+            if peek_interval > 0 and (time.monotonic() - self._active_play_last_peek) >= peek_interval and hash_changed:
                 self._active_play_last_peek = time.monotonic()
                 try:
                     peek_text = await recognize(
@@ -1474,6 +1510,13 @@ class TribeWatchApp:
 
         # OCR the image first — we detect the LOG header from the text,
         # not from pixel heuristics (which false-positive on bright game scenes).
+        # Skip when the bbox is byte-identical to the previous successful
+        # cycle: the OCR result would be identical, no new events, no
+        # change in log_header_visible. ONNX inference is the dominant
+        # CPU cost in the worker thread, so this is the biggest
+        # monitoring-mode win.
+        if not hash_changed:
+            return
         ocr_start = time.monotonic()
         text = await recognize(
             img,
