@@ -1293,9 +1293,26 @@ class TribeWatchApp:
 
             check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
             _L_ATTEMPTS = 3
+            _POLL_INTERVAL = 1.0
+            poll_budget = max(check_wait * 2, 12.0)
             recovered = False
+            aborted_for_active_play = False
 
             for attempt in range(1, _L_ATTEMPTS + 1):
+                # If the user started playing between attempts, stop —
+                # firing more L into their game window would pop the
+                # tribe log over their view, and a stale-state success
+                # check could falsely escalate to auto-reconnect (which
+                # closes ARK on them mid-play).
+                if self._active_play:
+                    log.info(
+                        "Idle recovery: user started playing — aborting "
+                        "recovery (attempt %d/%d not sent)",
+                        attempt, _L_ATTEMPTS,
+                    )
+                    aborted_for_active_play = True
+                    break
+
                 # Dismiss esc menu if open before pressing L
                 if await self._is_esc_menu_open():
                     log.info("Idle recovery: pause menu detected, dismissing before L (attempt %d/%d)", attempt, _L_ATTEMPTS)
@@ -1304,15 +1321,44 @@ class TribeWatchApp:
 
                 log.info("Idle recovery: pressing L to reopen tribe log (attempt %d/%d)", attempt, _L_ATTEMPTS)
                 send_key(window_title, "l")
-                await asyncio.sleep(check_wait)
+                # Tiny initial settle so the very first poll doesn't
+                # OCR a frame mid-fade-in.
+                await asyncio.sleep(0.5)
 
-                if self._log_header_visible:
-                    log.info("Recovery successful — tribe log reopened (attempt %d/%d)", attempt, _L_ATTEMPTS)
+                # Active polling via inline OCR — don't rely on
+                # self._log_header_visible (the bg OCR cycle updates it
+                # on its own cadence, and the OS-signal active_play
+                # transition can clear it as a side effect, which the
+                # old stale-flag check would misread as "L failed").
+                deadline = time.monotonic() + poll_budget
+                detected = False
+                while time.monotonic() < deadline:
+                    if await self._check_log_header_now():
+                        elapsed = poll_budget - (deadline - time.monotonic())
+                        log.info(
+                            "Idle recovery: tribe log reopened "
+                            "(attempt %d/%d, after %.1fs)",
+                            attempt, _L_ATTEMPTS, elapsed,
+                        )
+                        detected = True
+                        break
+                    if self._active_play:
+                        log.info(
+                            "Idle recovery: user started playing mid-poll "
+                            "— aborting recovery (attempt %d/%d)",
+                            attempt, _L_ATTEMPTS,
+                        )
+                        aborted_for_active_play = True
+                        break
+                    await asyncio.sleep(_POLL_INTERVAL)
+                if detected:
                     self._screen_still_since = None
                     recovered = True
                     break
+                if aborted_for_active_play:
+                    break
 
-            if recovered:
+            if recovered or aborted_for_active_play:
                 continue
 
             # All attempts failed — check for death screen before reconnecting
