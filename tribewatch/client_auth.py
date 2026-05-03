@@ -65,6 +65,7 @@ async def obtain_client_token_device(
     Returns the client token string, or "" on timeout/failure.
     """
     import aiohttp
+    from tribewatch.http import make_session
 
     url = server_url.rstrip("/")
     if not url.startswith(("http://", "https://")):
@@ -72,7 +73,7 @@ async def obtain_client_token_device(
 
     # Step 1: Request device code from server
     log.info("Requesting device code from %s", url)
-    async with aiohttp.ClientSession() as session:
+    async with make_session() as session:
         try:
             async with session.post(
                 f"{url}/api/v1/auth/device",
@@ -106,7 +107,7 @@ async def obtain_client_token_device(
 
     # Step 3: Poll until complete, expired, or timeout
     deadline = asyncio.get_event_loop().time() + min(timeout, expires_in)
-    async with aiohttp.ClientSession() as session:
+    async with make_session() as session:
         while asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(interval)
             try:

@@ -11,6 +11,8 @@ from typing import Any, Callable
 
 import aiohttp
 
+from tribewatch.http import make_session
+
 log = logging.getLogger(__name__)
 
 
@@ -89,7 +91,7 @@ class ServerRelay:
     async def start(self) -> None:
         """Start the relay connection loop."""
         self._running = True
-        self._session = aiohttp.ClientSession()
+        self._session = make_session()
         self._connect_task = asyncio.create_task(self._connection_loop())
 
     async def stop(self) -> None:

@@ -11,6 +11,7 @@ import tempfile
 import aiohttp
 
 from tribewatch import __version__
+from tribewatch.http import make_session
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ def _parse_version(v: str) -> tuple[int, ...]:
 async def _check_dev_update() -> dict | None:
     """Check the dev-latest pre-release for a newer dev build."""
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_session() as session:
             async with session.get(
                 DEV_RELEASE_API,
                 headers={"Accept": "application/vnd.github.v3+json"},
@@ -117,7 +118,7 @@ async def _check_dev_update() -> dict | None:
 async def _check_stable_update() -> dict | None:
     """Check the latest stable release for a newer version."""
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_session() as session:
             async with session.get(
                 RELEASES_API,
                 headers={"Accept": "application/vnd.github.v3+json"},
@@ -204,7 +205,7 @@ async def download_and_run_installer(download_url: str) -> bool:
         headers = {"Accept": "application/octet-stream"}
 
         log.info("Downloading update from %s", download_url)
-        async with aiohttp.ClientSession() as session:
+        async with make_session() as session:
             async with session.get(
                 download_url,
                 headers=headers,

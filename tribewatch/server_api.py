@@ -13,6 +13,8 @@ from typing import Any
 
 import aiohttp
 
+from tribewatch.http import make_session
+
 log = logging.getLogger(__name__)
 
 
@@ -40,7 +42,7 @@ async def claim_tribe(
     url = f"{base}/api/v1/tribe/tribes/claim"
     headers = {"Authorization": f"Bearer {client_token}"}
     payload = {"name": name, "server_id": server_id}
-    async with aiohttp.ClientSession() as session:
+    async with make_session() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             text = await resp.text()
             if resp.status >= 300:
@@ -65,7 +67,7 @@ async def list_tribes(
     url = f"{base}/api/v1/tribe/tribes"
     headers = {"Authorization": f"Bearer {client_token}"}
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_session() as session:
             async with session.get(url, headers=headers) as resp:
                 if resp.status >= 300:
                     log.warning("list_tribes HTTP %d", resp.status)
@@ -109,7 +111,7 @@ async def rename_tribe(
     url = f"{base}/api/v1/tribe/tribes/{tribe_id}/rename"
     headers = {"Authorization": f"Bearer {client_token}"}
     payload = {"new_name": new_name}
-    async with aiohttp.ClientSession() as session:
+    async with make_session() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             text = await resp.text()
             if resp.status >= 300:
