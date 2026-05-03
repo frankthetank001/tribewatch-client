@@ -57,6 +57,24 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+
+          # Prefer the annotated tag's message as the user-facing release
+          # body. Falls back to the auto-generated commit list when the
+          # tag is lightweight or its message is empty / placeholder.
+          # This lets the tagger write a real summary for end users
+          # ("Auto-updater now works on machines with old Windows certs")
+          # instead of letting raw commit subjects ship to the Discord
+          # embed ("fix: route all aiohttp HTTPS through certifi-backed
+          # SSL context").
+          TAG_MSG=$(git tag -l --format='%(contents)' "${TAG}" | sed -e 's/[[:space:]]*$//')
+          # Strip a leading PGP signature block if the tag was signed.
+          TAG_MSG=$(printf '%s' "${TAG_MSG}" | awk '/^-----BEGIN PGP SIGNATURE-----$/{exit} {print}')
+          # Treat a message that's just the tag name (default for
+          # lightweight tags) as empty.
+          if [ "${TAG_MSG}" = "${TAG}" ] || [ -z "${TAG_MSG}" ]; then
+            TAG_MSG=""
+          fi
+
           PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${TAG}$" | head -1 || true)
           if [ -n "${PREV_TAG}" ]; then
             RANGE="${PREV_TAG}..${TAG}"
@@ -66,23 +84,34 @@ jobs:
             COMPARE=""
           fi
 
-          fmt() {
-            git log --no-merges --pretty=format:'%s' "${RANGE}" \
-              | grep -iE "$1" \
-              | sed -E 's/^[a-z]+(\([^)]*\))?:[[:space:]]*//' \
-              | sed 's/^/- /' || true
-          }
+          if [ -n "${TAG_MSG}" ]; then
+            # Hand-written tag message wins. Append a "Full changelog"
+            # link at the bottom for anyone who wants the raw commits.
+            {
+              printf '%s\n' "${TAG_MSG}"
+              if [ -n "${COMPARE}" ]; then printf '\n---\n**Full changelog**: %s\n' "${COMPARE}"; fi
+            } > release-notes.md
+          else
+            # Fallback: auto-categorised commit list (the original
+            # behaviour, kept as a safety net for un-annotated tags).
+            fmt() {
+              git log --no-merges --pretty=format:'%s' "${RANGE}" \
+                | grep -iE "$1" \
+                | sed -E 's/^[a-z]+(\([^)]*\))?:[[:space:]]*//' \
+                | sed 's/^/- /' || true
+            }
 
-          FEATS=$(fmt '^feat(\([^)]*\))?:')
-          FIXES=$(fmt '^fix(\([^)]*\))?:')
-          OTHER=$(fmt '^(chore|ci|docs|test|refactor|build|perf|style)(\([^)]*\))?:')
+            FEATS=$(fmt '^feat(\([^)]*\))?:')
+            FIXES=$(fmt '^fix(\([^)]*\))?:')
+            OTHER=$(fmt '^(chore|ci|docs|test|refactor|build|perf|style)(\([^)]*\))?:')
 
-          {
-            if [ -n "${FEATS}" ]; then printf '### ✨ Features\n%s\n\n' "${FEATS}"; fi
-            if [ -n "${FIXES}" ]; then printf '### 🐛 Fixes\n%s\n\n' "${FIXES}"; fi
-            if [ -n "${OTHER}" ]; then printf '### 🔧 Other\n%s\n\n' "${OTHER}"; fi
-            if [ -n "${COMPARE}" ]; then printf '**Full changelog**: %s\n' "${COMPARE}"; fi
-          } > release-notes.md
+            {
+              if [ -n "${FEATS}" ]; then printf '### ✨ Features\n%s\n\n' "${FEATS}"; fi
+              if [ -n "${FIXES}" ]; then printf '### 🐛 Fixes\n%s\n\n' "${FIXES}"; fi
+              if [ -n "${OTHER}" ]; then printf '### 🔧 Other\n%s\n\n' "${OTHER}"; fi
+              if [ -n "${COMPARE}" ]; then printf '**Full changelog**: %s\n' "${COMPARE}"; fi
+            } > release-notes.md
+          fi
 
           echo "--- release-notes.md ---"
           cat release-notes.md
