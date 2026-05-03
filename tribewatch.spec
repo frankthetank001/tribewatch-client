@@ -2,8 +2,15 @@
 """PyInstaller spec for TribeWatch client (no server/standalone)."""
 
 import os, importlib, re
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 block_cipher = None
+
+# certifi — bundle the cacert.pem so certifi.where() resolves at
+# runtime in the frozen build. Without this, tribewatch.http can't
+# build an SSL context and every HTTPS request to a host the system
+# CA store doesn't cover (notably api.github.com on some Windows
+# machines) fails with CERTIFICATE_VERIFY_FAILED.
+_certifi_datas = collect_data_files('certifi')
 
 # psutil — collect every submodule so the bundle has the .py wrappers
 # alongside the _psutil_windows.pyd C extension. Without this, the
@@ -43,12 +50,15 @@ a = Analysis(
         (os.path.join(_rapidocr_dir, 'models'), 'rapidocr_onnxruntime/models'),
         ('scripts', 'scripts'),
         ('tribewatch.ico', '.'),
+        *_certifi_datas,
     ],
     hiddenimports=[
         'tribewatch.eos',
         'tribewatch.updater',
         'tribewatch.reconnect',
         'tribewatch.overlay_ui',
+        'tribewatch.http',
+        'certifi',
         'pyautogui',
         'rapidocr_onnxruntime',
         'ch_ppocr_v2_cls',

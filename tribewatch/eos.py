@@ -9,6 +9,8 @@ import time
 
 import aiohttp
 
+from tribewatch.http import make_session
+
 log = logging.getLogger(__name__)
 
 # ARK: Survival Ascended EOS credentials (public, embedded in game client)
@@ -61,7 +63,7 @@ class AsyncEOSClient:
     ) -> list[dict]:
         """Query the EOS matchmaking API. Returns list of session dicts."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with make_session() as session:
                 await self._ensure_auth(session)
                 body: dict = {"criteria": criteria or []}
                 if max_results:
@@ -106,7 +108,7 @@ class BattleMetricsClient:
     async def get_server_by_name(self, name: str) -> dict | None:
         """Find an ARK:SA server by name. Returns server dict or None."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with make_session() as session:
                 async with session.get(
                     self.SEARCH_URL,
                     params={

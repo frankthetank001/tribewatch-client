@@ -21,6 +21,11 @@ dependencies = [
     # explicit dep so the CI build env reliably includes it.
     "psutil>=5.9",
     "qrcode>=7.0",
+    # Used by tribewatch.http for SSL verification in frozen builds.
+    # Was previously transitive via aiohttp — promoted to an explicit
+    # dep so the CI build env reliably includes it AND PyInstaller
+    # picks up the cacert.pem data file.
+    "certifi>=2023.0",
 ]
 
 [project.optional-dependencies]
