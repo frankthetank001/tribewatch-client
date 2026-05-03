@@ -558,7 +558,7 @@ def _check_for_updates() -> None:
     try:
         update = _asyncio.run(check_for_update())
     except Exception:
-        log.debug("Update check failed", exc_info=True)
+        log.warning("Update check failed with exception", exc_info=True)
         return
 
     if update is None:

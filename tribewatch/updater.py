@@ -48,6 +48,15 @@ async def _check_dev_update() -> dict | None:
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status != 200:
+                    # 403 typically = anonymous rate limit (60/h per IP).
+                    # Surface this loudly so a rate-limited box doesn't
+                    # silently report "up to date" for hours/days.
+                    log.warning(
+                        "Dev update check: GitHub API returned status %d "
+                        "for %s — treating as 'no update available' "
+                        "(check would resume on next launch)",
+                        resp.status, DEV_RELEASE_API,
+                    )
                     return None
                 data = await resp.json()
 
@@ -60,8 +69,19 @@ async def _check_dev_update() -> dict | None:
                 remote_version = line.split("`")[1] if "`" in line else ""
                 break
 
-        if not remote_version or remote_version == __version__:
+        if not remote_version:
+            log.warning(
+                "Dev update check: could not parse '**Version:** `dev-...`' "
+                "from release body — body shape may have changed",
+            )
             return None
+        if remote_version == __version__:
+            log.info("Dev update check: up to date (current=%s)", __version__)
+            return None
+        log.info(
+            "Dev update check: NEW version available remote=%s current=%s",
+            remote_version, __version__,
+        )
 
         # Find the installer asset. Prefer the API endpoint URL over
         # browser_download_url — the latter routes through GitHub's
@@ -90,7 +110,7 @@ async def _check_dev_update() -> dict | None:
             "is_installer": is_installer,
         }
     except Exception:
-        log.debug("Dev update check failed", exc_info=True)
+        log.warning("Dev update check failed with exception", exc_info=True)
         return None
 
 
@@ -104,6 +124,11 @@ async def _check_stable_update() -> dict | None:
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status != 200:
+                    log.warning(
+                        "Stable update check: GitHub API returned status %d "
+                        "for %s — treating as 'no update available'",
+                        resp.status, RELEASES_API,
+                    )
                     return None
                 data = await resp.json()
 
@@ -111,8 +136,21 @@ async def _check_stable_update() -> dict | None:
         remote_ver = _parse_version(tag)
         local_ver = _parse_version(__version__)
 
-        if not remote_ver or remote_ver <= local_ver:
+        if not remote_ver:
+            log.warning(
+                "Stable update check: could not parse tag_name=%r", tag,
+            )
             return None
+        if remote_ver <= local_ver:
+            log.info(
+                "Stable update check: up to date (current=%s, remote=%s)",
+                __version__, tag,
+            )
+            return None
+        log.info(
+            "Stable update check: NEW version available remote=%s current=%s",
+            tag, __version__,
+        )
 
         # Find the installer asset (use API URL — see _check_dev_update)
         download_url = None
@@ -135,7 +173,7 @@ async def _check_stable_update() -> dict | None:
             "is_installer": is_installer,
         }
     except Exception:
-        log.debug("Update check failed", exc_info=True)
+        log.warning("Stable update check failed with exception", exc_info=True)
         return None
 
 
