@@ -1484,12 +1484,16 @@ class TribeWatchApp:
                 self._screen_still_since = None
         self._prev_thumb = thumb
 
-        # Once-per-minute diagnostic log
+        # Once-per-minute diagnostic log. Demoted from INFO to DEBUG —
+        # active_play is now driven by the OS-signal gate above, so the
+        # thumbnail-diff percentage is informational only (it feeds
+        # _idle_screen_monitor's long-still recovery threshold). Useful
+        # when actively diagnosing the cycle, noisy in normal logs.
         _now = time.monotonic()
         _last = getattr(self, "_active_play_diag_last", 0.0)
         if _now - _last >= 60.0:
             self._active_play_diag_last = _now
-            log.info(
+            log.debug(
                 "screen change %.2f%% (active_play=%s, OS-gated)",
                 self._screen_change_pct, self._active_play,
             )
