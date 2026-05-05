@@ -15,6 +15,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Fetch tag OBJECTS, not just refs. Without this, an
+          # annotated tag arrives as a lightweight ref pointing at
+          # its commit — git tag -l --format='%(contents)' then
+          # returns the commit's message instead of the tag's
+          # annotation, defeating the user-facing release notes
+          # path below.
+          fetch-tags: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
