@@ -759,6 +759,26 @@ class TribeWatchApp:
             else:
                 status["monitoring"] = False
 
+            # Once-per-minute diagnostic: log the exact monitoring /
+            # active_play values being reported to the server, plus the
+            # underlying state that drives them. Lets us correlate the
+            # dashboard's per-client tile (which uses these flags) with
+            # what the client thinks it's saying — without this,
+            # "client shows as idle on the website" is undebuggable
+            # from the client log alone.
+            _last_status_diag = getattr(self, "_status_diag_last", 0.0)
+            if now_mono - _last_status_diag >= 60.0:
+                self._status_diag_last = now_mono
+                log.info(
+                    "status: monitoring=%s active_play=%s "
+                    "(log_header_visible=%s, visible_for=%.1fs, paused=%s)",
+                    status.get("monitoring"),
+                    getattr(self, "_active_play", False),
+                    self._log_header_visible,
+                    (time.time() - visible_since) if visible_since else 0.0,
+                    self._paused,
+                )
+
         # Parasaur sessions
         parasaur_activity = []
         for key, sess in self._parasaur_sessions.items():
