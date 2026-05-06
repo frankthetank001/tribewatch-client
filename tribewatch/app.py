@@ -1322,7 +1322,15 @@ class TribeWatchApp:
             self._idle_recovery_attempted = True
 
             window_title = self.config.general.window_title
-            from tribewatch.capture import send_key, focus_window, is_window_foreground
+            from tribewatch.capture import (
+                send_key, focus_window, is_window_foreground, is_actively_playing,
+            )
+
+            active_threshold_secs = float(
+                getattr(self.config.tribe_log, "active_play_idle_seconds", 5.0)
+                or 5.0
+            )
+            active_threshold_ms = int(active_threshold_secs * 1000)
 
             log.warning(
                 "Screen idle for %ds with tribe log closed — attempting recovery",
@@ -1333,17 +1341,17 @@ class TribeWatchApp:
             # focus_window uses keybd_event(VK_MENU) — a synthetic input
             # that updates GetLastInputInfo, which would make
             # is_actively_playing() return True for the next
-            # active_play_idle_seconds. Sleep past that threshold so our
-            # own Alt-tap ages out before the capture cycle samples
-            # active_play; otherwise the first L attempt aborts on a
-            # false-positive and recovery never reaches auto-reconnect.
+            # active_play_idle_seconds. Sleep past that threshold AND
+            # past one capture-cycle interval so our own Alt-tap has
+            # both aged out at the OS level and propagated to the
+            # cached _active_play flag.
             if window_title and not is_window_foreground(window_title):
                 log.info("Idle recovery: ARK not foreground, focusing window")
                 focus_window(window_title)
-                settle = float(
-                    getattr(self.config.tribe_log, "active_play_idle_seconds", 5.0)
-                    or 5.0
-                ) + 0.5
+                interval_secs = float(
+                    getattr(self.config.tribe_log, "interval", 2.0) or 2.0
+                )
+                settle = active_threshold_secs + interval_secs + 0.5
                 await asyncio.sleep(settle)
 
             check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
@@ -1359,7 +1367,18 @@ class TribeWatchApp:
                 # tribe log over their view, and a stale-state success
                 # check could falsely escalate to auto-reconnect (which
                 # closes ARK on them mid-play).
-                if self._active_play:
+                #
+                # Query the OS-level signal directly instead of the
+                # cached self._active_play flag. That flag is only
+                # flipped by the capture cycle, which has a ~2s cadence
+                # and returns early while _active_play is True — so the
+                # flag can lag reality by a full capture interval.
+                # Reading is_actively_playing() reflects current input
+                # state immediately and decouples recovery from the
+                # capture cycle's schedule.
+                if is_actively_playing(
+                    window_title, idle_threshold_ms=active_threshold_ms,
+                ):
                     log.info(
                         "Idle recovery: user started playing — aborting "
                         "recovery (attempt %d/%d not sent)",
@@ -1397,7 +1416,12 @@ class TribeWatchApp:
                         )
                         detected = True
                         break
-                    if self._active_play:
+                    # Direct OS-signal check (see comment above the
+                    # outer attempt-loop check for why we don't use
+                    # self._active_play).
+                    if is_actively_playing(
+                        window_title, idle_threshold_ms=active_threshold_ms,
+                    ):
                         log.info(
                             "Idle recovery: user started playing mid-poll "
                             "— aborting recovery (attempt %d/%d)",
