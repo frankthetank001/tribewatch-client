@@ -1502,6 +1502,7 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
                 if records and _active_relay:
                     await _active_relay.send_reconnect_history(records)
 
+            from dataclasses import asdict as _asdict_for_provider
             relay = ServerRelay(
                 server_url=cfg.server.server_url,
                 auth_token=cfg.server.auth_token,
@@ -1512,6 +1513,10 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
                 on_auth_expired=_on_auth_expired,
                 on_tribe_unknown=_on_tribe_unknown,
                 on_connect=_on_relay_connect,
+                # Re-snapshot cfg on every (re)connect so the latest
+                # tribe_name (post-OCR rename / manual change / server
+                # switch) is sent — not the snapshot from app startup.
+                config_provider=lambda: _asdict_for_provider(cfg),
             )
             global _active_relay
             _active_relay = relay

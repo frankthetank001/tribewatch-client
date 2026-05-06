@@ -35,6 +35,7 @@ class ServerRelay:
         on_auth_expired: Callable[[], Any] | None = None,
         on_tribe_unknown: Callable[[dict], Any] | None = None,
         on_connect: Callable[[], Any] | None = None,
+        config_provider: Callable[[], dict] | None = None,
     ) -> None:
         self._server_url = self._normalize_url(server_url)
         self._auth_token = auth_token
@@ -45,6 +46,13 @@ class ServerRelay:
         self._on_config_update = on_config_update  # (section, data, msg_id) -> ...
         self._on_tribe_unknown = on_tribe_unknown  # (msg) -> ...
         self._on_connect = on_connect  # () -> ...
+        # () -> dict — called on every (re)connect to get the freshest
+        # config snapshot. Without this, _pending_config caches whatever
+        # was sent at startup and any later change to cfg.tribe.tribe_name
+        # (OCR-detected rename, manual rename, server change) is lost on
+        # reconnect — the server then registers the client against the
+        # stale tribe name until the next full tribe_info dispatch.
+        self._config_provider = config_provider
 
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -178,10 +186,22 @@ class ServerRelay:
         # be set, timing out after 10s and re-buffering the same events forever.
         self._listen_task = asyncio.create_task(self._listen())
 
-        # Send pending config snapshot (tribe_name etc.)
-        if self._pending_config is not None:
+        # Send config snapshot (tribe_name etc.). Prefer the provider so
+        # we get the *current* cfg state on each reconnect — otherwise a
+        # stale cached snapshot wins and the server registers the client
+        # against an out-of-date tribe name after a deploy.
+        config_to_send: dict | None = None
+        if self._config_provider is not None:
             try:
-                await self._ws.send_json({"type": "config", "data": self._pending_config})
+                config_to_send = self._config_provider()
+            except Exception:
+                log.debug("config_provider failed, falling back to cached", exc_info=True)
+        if config_to_send is None:
+            config_to_send = self._pending_config
+        if config_to_send is not None:
+            self._pending_config = config_to_send
+            try:
+                await self._ws.send_json({"type": "config", "data": config_to_send})
             except Exception:
                 log.debug("Failed to send config on connect", exc_info=True)
 
