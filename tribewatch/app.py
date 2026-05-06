@@ -929,12 +929,18 @@ class TribeWatchApp:
             overlay.update("monitoring", "Monitoring")
             return
 
-        # Screen is still but tribe log not visible — idle/recovery countdown
+        # AFK + log-not-visible — show idle/recovery countdown. Combine
+        # screen-stillness with system input-idle so animated screens
+        # (ARK main menu cinematic backdrop, loading screens) don't mask
+        # the user's true AFK state.
+        from tribewatch.capture import get_idle_time_ms
+        afk_secs = get_idle_time_ms() / 1000.0
         still_since = self._screen_still_since
         if still_since is not None:
-            idle_secs = time.time() - still_since
+            afk_secs = max(afk_secs, time.time() - still_since)
+        if afk_secs > 0:
             threshold = self.config.alerts.idle_alert_minutes * 60
-            remaining = threshold - idle_secs
+            remaining = threshold - afk_secs
             if remaining > 0:
                 mins = int(remaining // 60)
                 secs = int(remaining % 60)
@@ -1261,13 +1267,30 @@ class TribeWatchApp:
             if self._paused or not self.capture.window_found:
                 continue
 
-            # If tribe log is visible or screen is active, reset everything
-            if self._log_header_visible or self._screen_still_since is None:
+            # AFK detection: combine screen-stillness with system input-idle.
+            # Either signals "user is AFK" - input-idle covers animated
+            # screens (ARK main menu cinematic backdrop, loading screens)
+            # where the screen-still detector cannot latch.
+            from tribewatch.capture import get_idle_time_ms
+            input_idle_secs = get_idle_time_ms() / 1000.0
+            screen_still_secs = (
+                (time.time() - self._screen_still_since)
+                if self._screen_still_since is not None
+                else 0.0
+            )
+            idle_duration = max(screen_still_secs, input_idle_secs)
+
+            # If tribe log is visible, user is actively playing, or no AFK
+            # signal at all, reset everything.
+            if (
+                self._log_header_visible
+                or self._active_play
+                or idle_duration <= 0
+            ):
                 self._idle_recovery_attempted = False
                 _last_log_min = 0
                 continue
 
-            idle_duration = time.time() - self._screen_still_since
             idle_whole_mins = int(idle_duration // 60)
 
             # Log progress at each even minute (2, 4, 6, 8)
@@ -1281,8 +1304,9 @@ class TribeWatchApp:
                 _last_log_min = idle_whole_mins
                 remaining = IDLE_THRESHOLD - idle_duration
                 log.info(
-                    "Screen idle for %dm, tribe log closed — recovery in %dm%ds",
+                    "User idle for %dm (screen_still=%ds, input_idle=%ds), tribe log closed — recovery in %dm%ds",
                     idle_whole_mins,
+                    int(screen_still_secs), int(input_idle_secs),
                     int(remaining // 60), int(remaining % 60),
                 )
 
@@ -1306,10 +1330,21 @@ class TribeWatchApp:
             )
 
             # Focus ARK so the PostMessage keystrokes actually register.
+            # focus_window uses keybd_event(VK_MENU) — a synthetic input
+            # that updates GetLastInputInfo, which would make
+            # is_actively_playing() return True for the next
+            # active_play_idle_seconds. Sleep past that threshold so our
+            # own Alt-tap ages out before the capture cycle samples
+            # active_play; otherwise the first L attempt aborts on a
+            # false-positive and recovery never reaches auto-reconnect.
             if window_title and not is_window_foreground(window_title):
                 log.info("Idle recovery: ARK not foreground, focusing window")
                 focus_window(window_title)
-                await asyncio.sleep(0.3)
+                settle = float(
+                    getattr(self.config.tribe_log, "active_play_idle_seconds", 5.0)
+                    or 5.0
+                ) + 0.5
+                await asyncio.sleep(settle)
 
             check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
             _L_ATTEMPTS = 3
@@ -1378,7 +1413,15 @@ class TribeWatchApp:
                 if aborted_for_active_play:
                     break
 
-            if recovered or aborted_for_active_play:
+            if recovered:
+                continue
+            if aborted_for_active_play:
+                # Don't latch _idle_recovery_attempted on a false-positive
+                # active-play trip: the 30s monitor sleep is the natural
+                # backoff, and if the user really is playing, screen
+                # activity will clear _screen_still_since via the gate at
+                # the top of the loop before the next tick.
+                self._idle_recovery_attempted = False
                 continue
 
             # All attempts failed — check for death screen before reconnecting
