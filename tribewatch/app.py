@@ -929,12 +929,18 @@ class TribeWatchApp:
             overlay.update("monitoring", "Monitoring")
             return
 
-        # Screen is still but tribe log not visible — idle/recovery countdown
+        # AFK + log-not-visible — show idle/recovery countdown. Combine
+        # screen-stillness with system input-idle so animated screens
+        # (ARK main menu cinematic backdrop, loading screens) don't mask
+        # the user's true AFK state.
+        from tribewatch.capture import get_idle_time_ms
+        afk_secs = get_idle_time_ms() / 1000.0
         still_since = self._screen_still_since
         if still_since is not None:
-            idle_secs = time.time() - still_since
+            afk_secs = max(afk_secs, time.time() - still_since)
+        if afk_secs > 0:
             threshold = self.config.alerts.idle_alert_minutes * 60
-            remaining = threshold - idle_secs
+            remaining = threshold - afk_secs
             if remaining > 0:
                 mins = int(remaining // 60)
                 secs = int(remaining % 60)
@@ -1261,13 +1267,30 @@ class TribeWatchApp:
             if self._paused or not self.capture.window_found:
                 continue
 
-            # If tribe log is visible or screen is active, reset everything
-            if self._log_header_visible or self._screen_still_since is None:
+            # AFK detection: combine screen-stillness with system input-idle.
+            # Either signals "user is AFK" - input-idle covers animated
+            # screens (ARK main menu cinematic backdrop, loading screens)
+            # where the screen-still detector cannot latch.
+            from tribewatch.capture import get_idle_time_ms
+            input_idle_secs = get_idle_time_ms() / 1000.0
+            screen_still_secs = (
+                (time.time() - self._screen_still_since)
+                if self._screen_still_since is not None
+                else 0.0
+            )
+            idle_duration = max(screen_still_secs, input_idle_secs)
+
+            # If tribe log is visible, user is actively playing, or no AFK
+            # signal at all, reset everything.
+            if (
+                self._log_header_visible
+                or self._active_play
+                or idle_duration <= 0
+            ):
                 self._idle_recovery_attempted = False
                 _last_log_min = 0
                 continue
 
-            idle_duration = time.time() - self._screen_still_since
             idle_whole_mins = int(idle_duration // 60)
 
             # Log progress at each even minute (2, 4, 6, 8)
@@ -1281,8 +1304,9 @@ class TribeWatchApp:
                 _last_log_min = idle_whole_mins
                 remaining = IDLE_THRESHOLD - idle_duration
                 log.info(
-                    "Screen idle for %dm, tribe log closed — recovery in %dm%ds",
+                    "User idle for %dm (screen_still=%ds, input_idle=%ds), tribe log closed — recovery in %dm%ds",
                     idle_whole_mins,
+                    int(screen_still_secs), int(input_idle_secs),
                     int(remaining // 60), int(remaining % 60),
                 )
 
