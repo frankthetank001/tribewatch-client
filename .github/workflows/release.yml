@@ -148,6 +148,22 @@ jobs:
             dist/TribeWatch-Setup.exe
             dist/TribeWatch-${{ steps.version.outputs.version }}-portable.zip
 
+      - name: Force-update release body
+        # softprops/action-gh-release@v2 reuses an existing release for
+        # the tag without overwriting its body — so a re-tag of an
+        # existing version (e.g. retag with a fresh annotation) leaves
+        # the stale body in place. The Discord notify step reads this
+        # body from `gh release view --json body`, so the embed silently
+        # ships whatever the FIRST workflow run wrote. Force-overwrite
+        # via the gh CLI here so the body always matches release-notes.md
+        # from this run.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: gh release edit "$TAG" --repo "$REPO" --notes-file release-notes.md
+
   notify:
     needs: build
     runs-on: ubuntu-latest
