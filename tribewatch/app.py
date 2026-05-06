@@ -1483,8 +1483,17 @@ class TribeWatchApp:
                     "Active play detected (ARK foreground + recent input) — "
                     "pausing tribe log & parasaur OCR",
                 )
-                self._log_header_visible = False
-                self._log_visible_since = None
+                # Don't reset _log_header_visible / _log_visible_since
+                # here. A brief active_play flip (e.g. user clicks
+                # another window after a moment of activity in ARK,
+                # ARK loses foreground 2s later) would reset the 30s
+                # log-visibility hysteresis and leave the dashboard
+                # showing monitoring=False for ~32s after a 2s focus
+                # blip. The cached state from just before active_play
+                # is almost certainly still accurate; if the user
+                # actually closed the log while playing, the very
+                # next OCR cycle (after active_play clears) catches
+                # up within ~2s anyway.
                 if self._character_dead:
                     log.info("Character death state cleared — active play detected")
                     self._character_dead = False
