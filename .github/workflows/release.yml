@@ -23,6 +23,21 @@ jobs:
           # path below.
           fetch-tags: true
 
+      - name: Force-fetch annotated tag object
+        # actions/checkout@v4 with fetch-depth: 0 + fetch-tags: true
+        # still leaves the triggering tag locally as a lightweight
+        # ref pointing at the commit, not the annotated tag object.
+        # Verified on v0.7.29: `git tag -l --format='%(contents)' v0.7.29`
+        # on the runner returned the commit's "Merge branch 'dev'"
+        # subject instead of the annotation, so the release embed
+        # shipped empty. An explicit refetch of refs/tags/<tag>
+        # forces the runner to download and replace it with the
+        # annotated tag object the GitHub API actually has.
+        shell: bash
+        run: |
+          git fetch origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}" --force
+          echo "tag type: $(git cat-file -t "${GITHUB_REF_NAME}")"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
