@@ -1306,10 +1306,21 @@ class TribeWatchApp:
             )
 
             # Focus ARK so the PostMessage keystrokes actually register.
+            # focus_window uses keybd_event(VK_MENU) — a synthetic input
+            # that updates GetLastInputInfo, which would make
+            # is_actively_playing() return True for the next
+            # active_play_idle_seconds. Sleep past that threshold so our
+            # own Alt-tap ages out before the capture cycle samples
+            # active_play; otherwise the first L attempt aborts on a
+            # false-positive and recovery never reaches auto-reconnect.
             if window_title and not is_window_foreground(window_title):
                 log.info("Idle recovery: ARK not foreground, focusing window")
                 focus_window(window_title)
-                await asyncio.sleep(0.3)
+                settle = float(
+                    getattr(self.config.tribe_log, "active_play_idle_seconds", 5.0)
+                    or 5.0
+                ) + 0.5
+                await asyncio.sleep(settle)
 
             check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
             _L_ATTEMPTS = 3
@@ -1378,7 +1389,15 @@ class TribeWatchApp:
                 if aborted_for_active_play:
                     break
 
-            if recovered or aborted_for_active_play:
+            if recovered:
+                continue
+            if aborted_for_active_play:
+                # Don't latch _idle_recovery_attempted on a false-positive
+                # active-play trip: the 30s monitor sleep is the natural
+                # backoff, and if the user really is playing, screen
+                # activity will clear _screen_still_since via the gate at
+                # the top of the loop before the next tick.
+                self._idle_recovery_attempted = False
                 continue
 
             # All attempts failed — check for death screen before reconnecting
