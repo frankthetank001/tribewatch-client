@@ -92,6 +92,7 @@ class ReconnectSequence:
         self._initial_use_browser: bool = use_browser
         self._death_detected: bool = False
         self._on_attempt_done: Callable | None = None  # (attempt, outcome, reason, screenshot_b64) -> ...
+        self._on_attempt_start: Callable | None = None  # (attempt) -> ... fires before each attempt begins
         self._attempt_start: float = 0
 
         # Detect launcher (steam / epic)
@@ -468,6 +469,11 @@ class ReconnectSequence:
             self._failure_reason = ""
             self._failure_screenshot_b64 = ""
             self._attempt_start = _time.monotonic()
+            if self._on_attempt_start:
+                try:
+                    self._on_attempt_start(attempt)
+                except Exception:
+                    log.debug("on_attempt_start callback error", exc_info=True)
             try:
                 if self._use_browser:
                     result = await self._do_browser_reconnect()
