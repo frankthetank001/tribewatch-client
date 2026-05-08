@@ -214,6 +214,11 @@ class TribeWatchApp:
         self._last_log_seen_at: float | None = None
         self._log_header_visible: bool = False
         self._log_visible_since: float | None = None  # when LOG first appeared continuously
+        # Force one OCR peek after each active_play True→False transition;
+        # while log is invisible and peek is done, the cycle skips ALL
+        # capture work and waits for idle-recovery (10m) to reopen the
+        # log. Avoids OCR-ing the game scene every 2s for nothing.
+        self._needs_log_peek: bool = True
         self._tribe_window_visible: bool = False
         self._tribe_window_last_ok: float | None = None
         self._tribe_window_fail_since: float | None = None
@@ -1505,12 +1510,23 @@ class TribeWatchApp:
             self._update_overlay()
             return  # zero further capture work this cycle
         if was_active:
-            # User just stopped playing (tabbed away or went idle). The
-            # rest of the cycle below will run normally and resume
-            # tribe-log monitoring.
+            # User just stopped playing (tabbed away or went idle). Force
+            # one OCR peek to re-confirm whether the tribe log is still
+            # visible, then drop into idle-skip mode if it isn't.
             self._active_play = False
+            self._needs_log_peek = True
             log.info("Resumed monitoring — ARK no longer foreground or input idle")
             self._kick_heartbeat()
+
+        # Idle skip-gate: once we've peeked and confirmed the log is
+        # closed, do NOTHING per cycle until idle-recovery reopens it.
+        # No PrintWindow, no hash, no thumbnail diff, no OCR — the bbox
+        # is showing the game scene which animates and would make the
+        # hash short-circuit useless. The 10-min recovery in
+        # _idle_screen_monitor will press L and flip
+        # _log_header_visible back to True, ending the skip.
+        if not self._log_header_visible and not self._needs_log_peek:
+            return
 
         img = self.capture.grab()
         if img is None:
@@ -1536,6 +1552,9 @@ class TribeWatchApp:
             return
 
         self._last_capture_at = time.time()
+        # Peek consumed (or normal cycle ran) — next cycle will skip if
+        # log is still closed.
+        self._needs_log_peek = False
 
         # Image-hash short-circuit for OCR. If the bbox bytes are
         # identical to the previous successful cycle, the OCR result
@@ -1752,6 +1771,14 @@ class TribeWatchApp:
             return
         # Skip capture/OCR during active play — still check session timers below
         if self._active_play:
+            await self._check_parasaur_grace()
+            await self._check_parasaur_clears()
+            return
+        # Idle skip-gate: log is closed and we've already peeked, so the
+        # user has gone AFK with no monitoring window open. Skip capture
+        # until idle-recovery reopens the log; still run time-based
+        # grace/clear checks.
+        if not self._log_header_visible and not self._needs_log_peek:
             await self._check_parasaur_grace()
             await self._check_parasaur_clears()
             return
@@ -2174,6 +2201,11 @@ class TribeWatchApp:
         # status isn't time-critical mid-game, and PrintWindow + OCR
         # contend with the GPU. Mirrors the gate parasaur already has.
         if self._active_play:
+            return
+        # Idle skip-gate: log closed and peek done means user is AFK
+        # with monitoring off; member status will be re-resolved when
+        # idle-recovery reopens the log.
+        if not self._log_header_visible and not self._needs_log_peek:
             return
 
         img = self._tribe_capture.grab()
