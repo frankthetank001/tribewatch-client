@@ -219,6 +219,13 @@ class TribeWatchApp:
         # capture work and waits for idle-recovery (10m) to reopen the
         # log. Avoids OCR-ing the game scene every 2s for nothing.
         self._needs_log_peek: bool = True
+        # Counts consecutive idle-recovery cycles that failed to reopen
+        # the log (whether ended in active-play abort or all L attempts
+        # exhausted without success). Resets when log becomes visible
+        # again. Escalates to auto-reconnect at 3 — protects against
+        # phantom-input storms where active-play keeps tripping but
+        # the screen never actually moves.
+        self._consecutive_recovery_failures: int = 0
         self._tribe_window_visible: bool = False
         self._tribe_window_last_ok: float | None = None
         self._tribe_window_fail_since: float | None = None
@@ -1293,6 +1300,7 @@ class TribeWatchApp:
                 or idle_duration <= 0
             ):
                 self._idle_recovery_attempted = False
+                self._consecutive_recovery_failures = 0
                 _last_log_min = 0
                 continue
 
@@ -1443,14 +1451,25 @@ class TribeWatchApp:
                     break
 
             if recovered:
+                self._consecutive_recovery_failures = 0
                 continue
             if aborted_for_active_play:
-                # Don't latch _idle_recovery_attempted on a false-positive
-                # active-play trip: the 30s monitor sleep is the natural
-                # backoff, and if the user really is playing, screen
-                # activity will clear _screen_still_since via the gate at
-                # the top of the loop before the next tick.
+                # Active-play trip during recovery — count as a failure
+                # so phantom-input storms (mouse jitter, alt-tab) don't
+                # loop forever. The outer-loop gate already prevents
+                # this from firing if the user is really playing
+                # (screen pixels would be moving), so reaching here 3x
+                # in a row means the active-play signal is lying.
                 self._idle_recovery_attempted = False
+                self._consecutive_recovery_failures += 1
+                if self._consecutive_recovery_failures >= 3:
+                    log.warning(
+                        "Recovery aborted on active-play %d times in a row — "
+                        "treating as phantom input, triggering auto-reconnect",
+                        self._consecutive_recovery_failures,
+                    )
+                    self._consecutive_recovery_failures = 0
+                    self._maybe_auto_reconnect("idle_recovery_phantom_active_play")
                 continue
 
             # All attempts failed — check for death screen before reconnecting
@@ -1458,6 +1477,7 @@ class TribeWatchApp:
                 self._handle_character_death()
                 continue
             log.warning("Recovery failed after %d L attempts — triggering auto-reconnect", _L_ATTEMPTS)
+            self._consecutive_recovery_failures = 0
             self._maybe_auto_reconnect("idle_recovery_failed")
 
     async def _capture_cycle(self) -> None:
