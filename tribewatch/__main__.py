@@ -1167,49 +1167,58 @@ def _handle_reconnect(
     if use_browser is None:
         use_browser = auto and fail_count >= 2
 
-    # Capture client phase snapshot
-    client_phase: dict = {}
-    try:
-        status = app.build_status()
-        still_since = status.get("screen_still_since")
-        import time as _time
-        client_phase = {
-            "monitoring": status.get("monitoring", False),
-            "active_play": status.get("active_play", False),
-            "paused": status.get("paused", False),
-            "ark_window": status.get("components", {}).get("ark_window", False),
-            "tribe_log_visible": status.get("components", {}).get("tribe_log", False),
-            "tribe_window_ok": status.get("components", {}).get("tribe_window", False),
-            "screen_change_pct": status.get("screen_change_pct", 0),
-            "idle_duration_secs": round(_time.time() - still_since, 1) if still_since else 0,
-        }
-    except Exception:
-        log.debug("Failed to capture client phase for reconnect record", exc_info=True)
+    # Capture client phase snapshot — re-run before each attempt so each
+    # row reflects the actual state at the moment that attempt began.
+    def _capture_phase() -> dict:
+        try:
+            status = app.build_status()
+            still_since = status.get("screen_still_since")
+            import time as _time
+            return {
+                "monitoring": status.get("monitoring", False),
+                "active_play": status.get("active_play", False),
+                "paused": status.get("paused", False),
+                "ark_window": status.get("components", {}).get("ark_window", False),
+                "tribe_log_visible": status.get("components", {}).get("tribe_log", False),
+                "tribe_window_ok": status.get("components", {}).get("tribe_window", False),
+                "screen_change_pct": status.get("screen_change_pct", 0),
+                "idle_duration_secs": round(_time.time() - still_since, 1) if still_since else 0,
+            }
+        except Exception:
+            log.debug("Failed to capture client phase for reconnect record", exc_info=True)
+            return {}
+
+    client_phase: dict = _capture_phase()
 
     window_title = getattr(app.config.general, "window_title", "ArkAscended")
     ocr_engine = getattr(app.config.tribe_log, "ocr_engine", "paddleocr")
 
-    # Save start screenshot — full ARK window, not the tribe log bbox
-    start_screenshot = ""
-    start_screenshot_b64 = ""
-    start_resolution: tuple[int, int] | None = None
-    try:
-        from tribewatch.capture import (
-            _find_window_by_title,
-            _grab_window,
-            get_window_client_size,
-        )
-        hwnd = _find_window_by_title(window_title)
-        if hwnd:
-            start_resolution = get_window_client_size(hwnd)
-            img = _grab_window(hwnd, bbox=None)
-            if img:
-                start_screenshot, start_screenshot_b64 = _save_screenshot(img, "start")
-    except Exception:
-        log.debug("Failed to save reconnect start screenshot", exc_info=True)
+    # Save start screenshot — full ARK window, not the tribe log bbox.
+    # Re-runs before each attempt so per-attempt rows show the actual
+    # game state at that retry's start (e.g. zombie window, Steam prompt,
+    # Windows error popup blocking input).
+    def _capture_start_screenshot() -> tuple[str, str, tuple[int, int] | None]:
+        path, b64 = "", ""
+        resolution: tuple[int, int] | None = None
+        try:
+            from tribewatch.capture import (
+                _find_window_by_title,
+                _grab_window,
+                get_window_client_size,
+            )
+            hwnd = _find_window_by_title(window_title)
+            if hwnd:
+                resolution = get_window_client_size(hwnd)
+                img = _grab_window(hwnd, bbox=None)
+                if img:
+                    path, b64 = _save_screenshot(img, "start")
+        except Exception:
+            log.debug("Failed to save reconnect start screenshot", exc_info=True)
+        if resolution is None:
+            resolution = getattr(getattr(app, "capture", None), "last_window_size", None)
+        return path, b64, resolution
 
-    if start_resolution is None:
-        start_resolution = getattr(getattr(app, "capture", None), "last_window_size", None)
+    start_screenshot, start_screenshot_b64, start_resolution = _capture_start_screenshot()
 
     method = "browser" if use_browser else "direct"
     record = ReconnectRecord(
@@ -1262,7 +1271,7 @@ def _handle_reconnect(
             fail_count=fail_count,
             client_phase=client_phase,
             screenshot_start=start_screenshot,
-            screenshot_start_b64=start_screenshot_b64 if attempt_num == 1 else "",
+            screenshot_start_b64=start_screenshot_b64,
             resolution=attempt_resolution,
         )
         rec.finalise(
@@ -1277,6 +1286,21 @@ def _handle_reconnect(
         if relay:
             asyncio.create_task(relay.send_reconnect_record(rec.to_dict(include_images=True)))
 
+    def _on_attempt_start(attempt_num):
+        """Refresh phase + start screenshot right before each attempt begins.
+
+        Attempt 1's snapshot was already captured at sequence init. For
+        retries we want the actual state at the moment the next attempt
+        kicks off — useful for catching post-backoff anomalies like a
+        zombie ARK window, Steam re-prompt, or a Windows error popup
+        stealing focus.
+        """
+        nonlocal client_phase, start_screenshot, start_screenshot_b64
+        if attempt_num == 1:
+            return  # already captured at sequence init
+        client_phase = _capture_phase()
+        start_screenshot, start_screenshot_b64, _ = _capture_start_screenshot()
+
     seq = ReconnectSequence(
         window_title=window_title,
         relay=relay,
@@ -1286,6 +1310,7 @@ def _handle_reconnect(
         reconnect_config=getattr(app.config, "reconnect", None),
     )
     seq._on_attempt_done = _on_attempt_done
+    seq._on_attempt_start = _on_attempt_start
     app._reconnect_seq = seq
     task = seq.start()
     log.info("Reconnect sequence started (auto=%s, browser=%s, trigger=%s)", auto, use_browser, trigger)
