@@ -1134,18 +1134,6 @@ class TribeWatchApp:
                 self._maybe_auto_reconnect("tribe_log_refresh_stuck")
                 return False
 
-            # If the user started playing during the post-Esc settle
-            # window, bail out before pressing L — sending L into the
-            # middle of their gameplay would pop the tribe log over
-            # their view. The next periodic refresh (20-25 min) will
-            # reopen monitoring once they're idle again.
-            if not manual and self._active_play:
-                log.info(
-                    "Tribe log refresh: user started playing during settle "
-                    "— aborting refresh (next attempt in 20-25 min)"
-                )
-                return False
-
             # Esc may have opened the pause menu (either because the log
             # wasn't open and Esc went to the menu, or because the menu
             # was already up). Either way, dismiss it before pressing L.
@@ -1195,16 +1183,6 @@ class TribeWatchApp:
                             "successfully (after %.1fs)", elapsed,
                         )
                         return True
-                    # If the user started playing mid-poll, stop polling
-                    # and don't retry L. Pressing L again would toggle
-                    # the just-opened log closed if it's coming up — and
-                    # any further keystrokes interfere with their game.
-                    if not manual and self._active_play:
-                        log.info(
-                            "Tribe log refresh: user started playing "
-                            "mid-poll — aborting refresh"
-                        )
-                        return False
                     await asyncio.sleep(_POLL_INTERVAL)
                 # Budget exhausted — only retry L if the pause menu is
                 # the reason (i.e. the keystroke truly didn't reach
@@ -1237,16 +1215,25 @@ class TribeWatchApp:
     async def _tribe_log_refresh_loop(self) -> None:
         """Periodically force a tribe-log refresh while idle.
 
-        Waits 20–25 minutes between attempts and only fires when the log
-        is visible, the user isn't actively playing, and the client isn't
-        paused. Delegates the actual key sequence + verification to
-        :meth:`refresh_tribe_log`.
+        Waits 20-25 minutes of NOT-actively-playing between attempts.
+        If the user starts playing during the wait, the timer resets
+        to a fresh interval so the next refresh fires 20-25 min after
+        they next go idle, never interrupting an active session.
         """
         import random
 
         while self._running:
             delay = random.uniform(20 * 60, 25 * 60)
-            await asyncio.sleep(delay)
+            target = time.monotonic() + delay
+            while self._running and time.monotonic() < target:
+                remaining = target - time.monotonic()
+                await asyncio.sleep(min(remaining, 5.0))
+                if self._active_play:
+                    # User came back. Reset to a fresh interval so the
+                    # countdown effectively starts over from "now" and
+                    # keeps sliding forward as long as they play.
+                    delay = random.uniform(20 * 60, 25 * 60)
+                    target = time.monotonic() + delay
             if not self._running:
                 break
             await self.refresh_tribe_log(manual=False)
