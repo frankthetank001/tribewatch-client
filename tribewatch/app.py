@@ -1117,16 +1117,37 @@ class TribeWatchApp:
         try:
             log.info("Tribe log refresh: pressing Esc (manual=%s)", manual)
             sent = send_key(window_title, "escape")
-            log.info("Tribe log refresh: Esc send_key returned %s; waiting %ss", sent, check_wait)
-            await asyncio.sleep(check_wait)
             log.info(
-                "Tribe log refresh: post-Esc state log_visible=%s",
-                self._log_header_visible,
+                "Tribe log refresh: Esc send_key returned %s; polling up to %ss for log to close",
+                sent, check_wait,
             )
+            # Poll inline OCR for the LOG header to disappear rather
+            # than blind-sleeping check_wait seconds and reading the
+            # cached _log_header_visible flag. The cached flag is
+            # only updated by the background _capture_cycle every
+            # ~interval seconds, so it can be up to one cycle stale
+            # at the moment we check, which made successful Escs
+            # falsely escalate to auto-reconnect when the bg cycle
+            # happened to OCR the log mid-fade-out.
+            _ESC_POLL_INTERVAL = 1.0
+            esc_deadline = time.monotonic() + check_wait
+            log_gone = False
+            while time.monotonic() < esc_deadline:
+                if not await self._check_log_header_now():
+                    elapsed = check_wait - (esc_deadline - time.monotonic())
+                    log.info(
+                        "Tribe log refresh: log closed after Esc (%.1fs)", elapsed,
+                    )
+                    self._log_header_visible = False
+                    self._log_visible_since = None
+                    log_gone = True
+                    break
+                await asyncio.sleep(_ESC_POLL_INTERVAL)
 
-            if self._log_header_visible:
+            if not log_gone:
                 log.warning(
-                    "Tribe log refresh: tribe log still visible after Esc — triggering auto-reconnect"
+                    "Tribe log refresh: tribe log still visible after %.0fs of Esc polling - triggering auto-reconnect",
+                    check_wait,
                 )
                 if await self._is_death_screen():
                     self._handle_character_death()
