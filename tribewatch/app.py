@@ -219,13 +219,6 @@ class TribeWatchApp:
         # capture work and waits for idle-recovery (10m) to reopen the
         # log. Avoids OCR-ing the game scene every 2s for nothing.
         self._needs_log_peek: bool = True
-        # Counts consecutive idle-recovery cycles that failed to reopen
-        # the log (whether ended in active-play abort or all L attempts
-        # exhausted without success). Resets when log becomes visible
-        # again. Escalates to auto-reconnect at 3 — protects against
-        # phantom-input storms where active-play keeps tripping but
-        # the screen never actually moves.
-        self._consecutive_recovery_failures: int = 0
         self._tribe_window_visible: bool = False
         self._tribe_window_last_ok: float | None = None
         self._tribe_window_fail_since: float | None = None
@@ -1300,7 +1293,6 @@ class TribeWatchApp:
                 or idle_duration <= 0
             ):
                 self._idle_recovery_attempted = False
-                self._consecutive_recovery_failures = 0
                 _last_log_min = 0
                 continue
 
@@ -1336,14 +1328,13 @@ class TribeWatchApp:
 
             window_title = self.config.general.window_title
             from tribewatch.capture import (
-                send_key, focus_window, is_window_foreground, is_actively_playing,
+                send_key, focus_window, is_window_foreground,
             )
 
             active_threshold_secs = float(
                 getattr(self.config.tribe_log, "active_play_idle_seconds", 5.0)
                 or 5.0
             )
-            active_threshold_ms = int(active_threshold_secs * 1000)
 
             log.warning(
                 "Screen idle for %ds with tribe log closed — attempting recovery",
@@ -1372,34 +1363,18 @@ class TribeWatchApp:
             _POLL_INTERVAL = 1.0
             poll_budget = max(check_wait * 2, 12.0)
             recovered = False
-            aborted_for_active_play = False
 
+            # Once we pass the outer countdown gate (idle long enough,
+            # log not visible, not actively playing) the recovery
+            # sequence commits. Brief input during the L-press +
+            # OCR-verify cycle no longer cancels: the user was given
+            # the full idle window to come back, the decision to
+            # reopen the log has been made, and aborting mid-sequence
+            # on phantom touchpad/mouse blips just produced a storm of
+            # restart attempts. Input cancels the COUNTDOWN (handled
+            # by the outer-loop gate at the top of this function), not
+            # the sequence itself.
             for attempt in range(1, _L_ATTEMPTS + 1):
-                # If the user started playing between attempts, stop —
-                # firing more L into their game window would pop the
-                # tribe log over their view, and a stale-state success
-                # check could falsely escalate to auto-reconnect (which
-                # closes ARK on them mid-play).
-                #
-                # Query the OS-level signal directly instead of the
-                # cached self._active_play flag. That flag is only
-                # flipped by the capture cycle, which has a ~2s cadence
-                # and returns early while _active_play is True — so the
-                # flag can lag reality by a full capture interval.
-                # Reading is_actively_playing() reflects current input
-                # state immediately and decouples recovery from the
-                # capture cycle's schedule.
-                if is_actively_playing(
-                    window_title, idle_threshold_ms=active_threshold_ms,
-                ):
-                    log.info(
-                        "Idle recovery: user started playing — aborting "
-                        "recovery (attempt %d/%d not sent)",
-                        attempt, _L_ATTEMPTS,
-                    )
-                    aborted_for_active_play = True
-                    break
-
                 # Dismiss esc menu if open before pressing L
                 if await self._is_esc_menu_open():
                     log.info("Idle recovery: pause menu detected, dismissing before L (attempt %d/%d)", attempt, _L_ATTEMPTS)
@@ -1412,11 +1387,9 @@ class TribeWatchApp:
                 # OCR a frame mid-fade-in.
                 await asyncio.sleep(0.5)
 
-                # Active polling via inline OCR — don't rely on
-                # self._log_header_visible (the bg OCR cycle updates it
-                # on its own cadence, and the OS-signal active_play
-                # transition can clear it as a side effect, which the
-                # old stale-flag check would misread as "L failed").
+                # Active polling via inline OCR. The bg OCR cycle
+                # updates self._log_header_visible on its own cadence
+                # so we cannot rely on the cached flag here.
                 deadline = time.monotonic() + poll_budget
                 detected = False
                 while time.monotonic() < deadline:
@@ -1429,55 +1402,20 @@ class TribeWatchApp:
                         )
                         detected = True
                         break
-                    # Direct OS-signal check (see comment above the
-                    # outer attempt-loop check for why we don't use
-                    # self._active_play).
-                    if is_actively_playing(
-                        window_title, idle_threshold_ms=active_threshold_ms,
-                    ):
-                        log.info(
-                            "Idle recovery: user started playing mid-poll "
-                            "— aborting recovery (attempt %d/%d)",
-                            attempt, _L_ATTEMPTS,
-                        )
-                        aborted_for_active_play = True
-                        break
                     await asyncio.sleep(_POLL_INTERVAL)
                 if detected:
                     self._screen_still_since = None
                     recovered = True
                     break
-                if aborted_for_active_play:
-                    break
 
             if recovered:
-                self._consecutive_recovery_failures = 0
-                continue
-            if aborted_for_active_play:
-                # Active-play trip during recovery — count as a failure
-                # so phantom-input storms (mouse jitter, alt-tab) don't
-                # loop forever. The outer-loop gate already prevents
-                # this from firing if the user is really playing
-                # (screen pixels would be moving), so reaching here 3x
-                # in a row means the active-play signal is lying.
-                self._idle_recovery_attempted = False
-                self._consecutive_recovery_failures += 1
-                if self._consecutive_recovery_failures >= 3:
-                    log.warning(
-                        "Recovery aborted on active-play %d times in a row — "
-                        "treating as phantom input, triggering auto-reconnect",
-                        self._consecutive_recovery_failures,
-                    )
-                    self._consecutive_recovery_failures = 0
-                    self._maybe_auto_reconnect("idle_recovery_phantom_active_play")
                 continue
 
-            # All attempts failed — check for death screen before reconnecting
+            # All attempts failed - check for death screen before reconnecting
             if await self._is_death_screen():
                 self._handle_character_death()
                 continue
-            log.warning("Recovery failed after %d L attempts — triggering auto-reconnect", _L_ATTEMPTS)
-            self._consecutive_recovery_failures = 0
+            log.warning("Recovery failed after %d L attempts - triggering auto-reconnect", _L_ATTEMPTS)
             self._maybe_auto_reconnect("idle_recovery_failed")
 
     async def _capture_cycle(self) -> None:
