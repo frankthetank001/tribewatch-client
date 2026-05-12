@@ -192,7 +192,22 @@ async def check_for_update() -> dict | None:
 
 
 async def download_and_run_installer(download_url: str) -> bool:
-    """Download the installer to a temp file and launch it."""
+    """Download the installer to a temp file and launch it silently.
+
+    The launch flags are tuned for a hands-free update with no UI:
+      /VERYSILENT       - suppresses every wizard page AND the progress
+                          dialog (just /SILENT leaves the progress bar
+                          on screen)
+      /SUPPRESSMSGBOXES - default-answer any message boxes that might
+                          appear (e.g. "file in use")
+      /NORESTART        - never prompt to reboot
+      /CLOSEAPPLICATIONS - close any TribeWatch instance the installer
+                           finds running, so file overwrites don't fail
+
+    The installer's [Run] entry with the postinstall flag still fires
+    in /VERYSILENT mode (Inno treats it as default-checked), so the
+    new exe relaunches automatically once install finishes.
+    """
     try:
         tmp_dir = tempfile.mkdtemp(prefix="tribewatch_update_")
         asset_name = ASSET_NAME_DEV if _is_dev_version() else ASSET_NAME_STABLE
@@ -212,13 +227,40 @@ async def download_and_run_installer(download_url: str) -> bool:
                 timeout=aiohttp.ClientTimeout(total=300),
             ) as resp:
                 resp.raise_for_status()
+                total = int(resp.headers.get("Content-Length", 0) or 0)
+                downloaded = 0
+                last_pct = -1
                 with open(installer_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(8192):
+                    async for chunk in resp.content.iter_chunked(64 * 1024):
                         f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0:
+                            pct = int(downloaded * 100 / total)
+                            # Update terminal line at each percentage
+                            # tick to avoid flooding the console.
+                            if pct != last_pct:
+                                last_pct = pct
+                                mb_done = downloaded / (1024 * 1024)
+                                mb_total = total / (1024 * 1024)
+                                print(
+                                    f"\r  Downloading update... {pct}% "
+                                    f"({mb_done:.1f}/{mb_total:.1f} MB)",
+                                    end="", flush=True,
+                                )
+                # Newline after the in-place progress line so the next
+                # log/print starts on a clean row.
+                if total > 0:
+                    print()
 
         log.info("Launching installer: %s", installer_path)
         subprocess.Popen(
-            [installer_path, "/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"],
+            [
+                installer_path,
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+                "/CLOSEAPPLICATIONS",
+            ],
             creationflags=subprocess.DETACHED_PROCESS,
         )
         return True
