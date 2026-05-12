@@ -29,6 +29,21 @@ class TribeLogConfig:
     # higher = stays in "playing" mode through longer in-game pauses
     # (e.g. watching crafting bars).
     active_play_idle_seconds: float = 5.0
+    # Minutes of idle (no input + screen static) before the client
+    # auto-presses L to reopen the tribe log. 0 = fall back to
+    # alerts.idle_alert_minutes for backwards compatibility.
+    idle_recovery_minutes: float = 0.0
+    # Random delay range, in minutes, between periodic Esc+L refreshes
+    # of an already-visible tribe log. The next refresh fires at a
+    # uniform-random point in this range, counted from when the user
+    # was last actively playing.
+    refresh_min_minutes: float = 20.0
+    refresh_max_minutes: float = 25.0
+    # Seconds to poll for the log to actually close after pressing
+    # Esc during a refresh. If the log doesn't close in that budget,
+    # refresh escalates to auto-reconnect. Bump it on slow machines
+    # where the fade-out takes longer than the default.
+    refresh_settle_seconds: float = 6.0
 
 
 @dataclass
