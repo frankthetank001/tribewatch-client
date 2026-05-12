@@ -192,21 +192,25 @@ async def check_for_update() -> dict | None:
 
 
 async def download_and_run_installer(download_url: str) -> bool:
-    """Download the installer to a temp file and launch it silently.
+    """Download the installer to a temp file and launch it.
 
-    The launch flags are tuned for a hands-free update with no UI:
-      /VERYSILENT       - suppresses every wizard page AND the progress
-                          dialog (just /SILENT leaves the progress bar
-                          on screen)
+    The launch flags are tuned for a hands-free update with minimal UI:
+      /SILENT           - suppresses every wizard page (Welcome, Tasks,
+                          Ready to Install, Finished) but keeps the
+                          small install-progress dialog visible. This
+                          gives the user a brief 'something is
+                          happening' indicator between the old console
+                          closing and the new one opening; without it
+                          (i.e. /VERYSILENT) the gap looks like a
+                          crash.
       /SUPPRESSMSGBOXES - default-answer any message boxes that might
-                          appear (e.g. "file in use")
+                          appear (e.g. 'file in use')
       /NORESTART        - never prompt to reboot
       /CLOSEAPPLICATIONS - close any TribeWatch instance the installer
                            finds running, so file overwrites don't fail
 
-    The installer's [Run] entry with the postinstall flag still fires
-    in /VERYSILENT mode (Inno treats it as default-checked), so the
-    new exe relaunches automatically once install finishes.
+    The installer's [Run] postinstall entry relaunches the new exe
+    automatically once install finishes.
     """
     try:
         tmp_dir = tempfile.mkdtemp(prefix="tribewatch_update_")
@@ -256,7 +260,7 @@ async def download_and_run_installer(download_url: str) -> bool:
         subprocess.Popen(
             [
                 installer_path,
-                "/VERYSILENT",
+                "/SILENT",
                 "/SUPPRESSMSGBOXES",
                 "/NORESTART",
                 "/CLOSEAPPLICATIONS",

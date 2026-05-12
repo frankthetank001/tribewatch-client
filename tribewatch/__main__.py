@@ -585,7 +585,7 @@ def _check_for_updates() -> None:
         except Exception:
             ok = False
         if ok:
-            print("  Installer launched silently. TribeWatch will relaunch shortly.")
+            print("  Installer launched. TribeWatch will relaunch shortly.")
             sys.exit(0)
         else:
             print("  Failed to download update. Continuing with current version.")
