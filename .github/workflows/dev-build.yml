@@ -43,12 +43,6 @@ jobs:
       - name: Build exe and installer
         run: python build.py --installer --iss installer-dev.iss
 
-      - name: Create ZIP archive of portable build
-        shell: pwsh
-        # Dev builds now produce dist\TribeWatch-Dev\ (different exe name
-        # so dev + stable installs can coexist on the same machine).
-        run: Compress-Archive -Path dist\TribeWatch-Dev\* -DestinationPath dist\TribeWatch-${{ steps.version.outputs.version }}-portable.zip
-
       - name: Create or update dev pre-release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
@@ -65,4 +59,3 @@ jobs:
           make_latest: false
           files: |
             dist/TribeWatch-Dev-Setup.exe
-            dist/TribeWatch-${{ steps.version.outputs.version }}-portable.zip

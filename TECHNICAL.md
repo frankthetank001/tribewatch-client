@@ -304,8 +304,7 @@ python build.py --installer  # dist/TribeWatch-Setup.exe (requires Inno Setup 6)
 1. Checkout → Python 3.12 → `pip install -e . && pip install pyinstaller`
 2. Install Inno Setup via Chocolatey
 3. `python build.py --installer`
-4. ZIP the portable build
-5. Create draft GitHub Release with both assets
+4. Create GitHub Release with `TribeWatch-Setup.exe` attached
 
 ### Hidden Imports
 
