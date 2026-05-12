@@ -575,33 +575,26 @@ def _check_for_updates() -> None:
             print("    ...")
 
     if update["is_installer"]:
-        # On a windowed/no-console build (e.g. launched from the start-menu
-        # shortcut), input() will raise or hang because there's no stdin.
-        # In that case auto-accept and proceed to download silently.
-        has_console = sys.stdin is not None and sys.stdin.isatty()
-        if has_console:
-            answer = input("\n  Download and install update now? [Y/n] ").strip().lower()
+        # Auto-accept always. The install runs /VERYSILENT and the
+        # post-install [Run] entry relaunches the new exe, so the user
+        # sees the download progress in this terminal and then a fresh
+        # one shortly after with the new version. No prompt, no dialog.
+        print("  Downloading update...")
+        try:
+            ok = _asyncio.run(download_and_run_installer(update["download_url"]))
+        except Exception:
+            ok = False
+        if ok:
+            print("  Installer launched. TribeWatch will relaunch shortly.")
+            sys.exit(0)
         else:
-            log.info("No console attached — auto-accepting update prompt")
-            answer = "y"
-        if answer in ("", "y", "yes"):
-            print("  Downloading update...")
-            try:
-                ok = _asyncio.run(download_and_run_installer(update["download_url"]))
-            except Exception:
-                ok = False
-            if ok:
-                print("  Installer launched. TribeWatch will restart shortly.")
-                sys.exit(0)
-            else:
-                print("  Failed to download update. Continuing with current version.")
-                print(f"  You can update manually: {update['release_url']}")
-        else:
-            print("  Skipping update.")
+            print("  Failed to download update. Continuing with current version.")
+            print(f"  You can update manually: {update['release_url']}")
     else:
+        # No installer asset attached to the release — surface the
+        # release URL so the user can grab it manually, but don't
+        # block startup waiting for input.
         print(f"\n  Download the update at: {update['release_url']}")
-        if sys.stdin is not None and sys.stdin.isatty():
-            input("  Press Enter to continue...")
 
     print()
 

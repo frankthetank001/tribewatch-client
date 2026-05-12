@@ -752,6 +752,19 @@ class TribeWatchApp:
                 "active_play_idle_seconds": getattr(
                     self.config.tribe_log, "active_play_idle_seconds", 5.0,
                 ),
+                "idle_recovery_minutes": (
+                    getattr(self.config.tribe_log, "idle_recovery_minutes", 0.0)
+                    or self.config.alerts.idle_alert_minutes
+                ),
+                "refresh_min_minutes": getattr(
+                    self.config.tribe_log, "refresh_min_minutes", 20.0,
+                ),
+                "refresh_max_minutes": getattr(
+                    self.config.tribe_log, "refresh_max_minutes", 25.0,
+                ),
+                "refresh_settle_seconds": getattr(
+                    self.config.tribe_log, "refresh_settle_seconds", 6.0,
+                ),
             },
         }
 
@@ -1082,7 +1095,16 @@ class TribeWatchApp:
         """
         from tribewatch.capture import send_key, focus_window, is_window_foreground
 
-        check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
+        # Configurable post-Esc settle / poll budget for the refresh
+        # sequence. Falls back to max(interval*2, 6) for backwards
+        # compatibility if not set (or set to 0).
+        _cfg_settle = float(
+            getattr(self.config.tribe_log, "refresh_settle_seconds", 0.0) or 0.0
+        )
+        if _cfg_settle > 0:
+            check_wait = _cfg_settle
+        else:
+            check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
         log.info(
             "Tribe log refresh: ENTER (manual=%s, paused=%s, log_visible=%s, active_play=%s, check_wait=%s)",
             manual, self._paused, self._log_header_visible, self._active_play, check_wait,
@@ -1243,8 +1265,15 @@ class TribeWatchApp:
         """
         import random
 
+        def _sample_delay() -> float:
+            lo = float(getattr(self.config.tribe_log, "refresh_min_minutes", 20.0) or 20.0)
+            hi = float(getattr(self.config.tribe_log, "refresh_max_minutes", 25.0) or 25.0)
+            if hi < lo:
+                hi = lo
+            return random.uniform(lo * 60, hi * 60)
+
         while self._running:
-            delay = random.uniform(20 * 60, 25 * 60)
+            delay = _sample_delay()
             target = time.monotonic() + delay
             while self._running and time.monotonic() < target:
                 remaining = target - time.monotonic()
@@ -1253,7 +1282,7 @@ class TribeWatchApp:
                     # User came back. Reset to a fresh interval so the
                     # countdown effectively starts over from "now" and
                     # keeps sliding forward as long as they play.
-                    delay = random.uniform(20 * 60, 25 * 60)
+                    delay = _sample_delay()
                     target = time.monotonic() + delay
             if not self._running:
                 break
@@ -1271,7 +1300,10 @@ class TribeWatchApp:
         """
         # Use idle_alert_minutes from config so the overlay countdown and
         # the actual recovery threshold stay in sync.
-        IDLE_THRESHOLD = self.config.alerts.idle_alert_minutes * 60
+        # Per-tribe-log override takes precedence; falls back to the
+        # alerts-driven default for backwards compatibility.
+        _tl_idle = getattr(self.config.tribe_log, "idle_recovery_minutes", 0.0) or 0.0
+        IDLE_THRESHOLD = (_tl_idle or self.config.alerts.idle_alert_minutes) * 60
         _last_log_min = 0  # track last logged minute to avoid spam
 
         while self._running:
