@@ -1,0 +1,59 @@
+# OpenSSF Scorecard supply-chain security analysis.
+# Runs weekly on Mondays, on every push to main, and whenever branch
+# protection rules change. Publishes results to securityscorecards.dev
+# (the public Scorecard API that backs the README badge) and uploads a
+# SARIF report to GitHub's code-scanning tab.
+#
+# Read-only by default; the analysis job needs a narrow set of writes:
+#   security-events: write   - upload SARIF to code scanning
+#   id-token: write          - OIDC token used for keyless attestation
+#                              of the published score (no secrets)
+#   contents: read           - clone the repo
+#   actions: read            - read workflow files for the "Dangerous-
+#                              Workflow" + "Token-Permissions" checks
+name: Scorecard supply-chain security
+
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: '30 1 * * 1'  # Mondays 01:30 UTC
+  push:
+    branches: ["main"]
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@v2.4.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # publish_results=true is required for the README badge to
+          # update. Result data is posted to the public Scorecard API.
+          publish_results: true
+
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload to GitHub code-scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif

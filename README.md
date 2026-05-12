@@ -4,6 +4,9 @@
   <p align="center">
     Discord alerts &bull; Web dashboard &bull; Raid timelines &bull; Member tracking &bull; Generator reminders &bull; Todo lists &bull; Calendar
   </p>
+  <p align="center">
+    <a href="https://scorecard.dev/viewer/?uri=github.com/frankthetank001/tribewatch-client"><img src="https://api.scorecard.dev/projects/github.com/frankthetank001/tribewatch-client/badge" alt="OpenSSF Scorecard"></a>
+  </p>
 </p>
 
 ---
