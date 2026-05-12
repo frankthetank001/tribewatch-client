@@ -575,23 +575,37 @@ def _check_for_updates() -> None:
             print("    ...")
 
     if update["is_installer"]:
-        # Auto-accept always. The install runs /VERYSILENT and the
-        # post-install [Run] entry relaunches the new exe, so the user
-        # sees the download progress in this terminal and then a fresh
-        # one shortly after with the new version. No prompt, no dialog.
-        print("  Downloading update...")
-        try:
-            ok = _asyncio.run(download_and_run_installer(update["download_url"]))
-        except Exception:
-            ok = False
-        if ok:
-            print("  Installer launched. TribeWatch will relaunch shortly.")
-            sys.exit(0)
+        # Ask for explicit consent. Auto-update without a prompt is a
+        # supply-chain attack surface - one consent moment per update
+        # gives the user a chance to notice an unexpected version or
+        # release notes before installing. On a windowed/no-console
+        # build there's no stdin to read from, so we fall back to
+        # auto-accept (the alternative is a hung process).
+        has_console = sys.stdin is not None and sys.stdin.isatty()
+        if has_console:
+            try:
+                answer = input("\n  Download and install update now? [Y/n] ").strip().lower()
+            except EOFError:
+                answer = "y"
         else:
-            print("  Failed to download update. Continuing with current version.")
-            print(f"  You can update manually: {update['release_url']}")
+            log.info("No console attached - auto-accepting update prompt")
+            answer = "y"
+        if answer in ("", "y", "yes"):
+            print("  Downloading update...")
+            try:
+                ok = _asyncio.run(download_and_run_installer(update["download_url"]))
+            except Exception:
+                ok = False
+            if ok:
+                print("  Installer launched. TribeWatch will relaunch shortly.")
+                sys.exit(0)
+            else:
+                print("  Failed to download update. Continuing with current version.")
+                print(f"  You can update manually: {update['release_url']}")
+        else:
+            print("  Skipping update.")
     else:
-        # No installer asset attached to the release — surface the
+        # No installer asset attached to the release - surface the
         # release URL so the user can grab it manually, but don't
         # block startup waiting for input.
         print(f"\n  Download the update at: {update['release_url']}")
