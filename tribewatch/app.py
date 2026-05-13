@@ -909,6 +909,16 @@ class TribeWatchApp:
         status["client_version"] = _client_version
         game_res = getattr(self, "_last_game_resolution", None)
         status["resolution"] = f"{game_res[0]}x{game_res[1]}" if game_res else ""
+        # Surface the render-side resolution when it differs from the
+        # window — lets the dashboard show "stretched" mode on hover. We
+        # send the render res unconditionally (even when it matches) so
+        # the dashboard can decide presentation; an empty string means
+        # we couldn't read GameUserSettings.ini.
+        pair = getattr(self, "_last_resolution_pair", None)
+        if pair and pair[1]:
+            status["render_resolution"] = f"{pair[1][0]}x{pair[1][1]}"
+        else:
+            status["render_resolution"] = ""
 
         # Surface tunable settings so the dashboard tile can show their
         # current state without an extra API call.

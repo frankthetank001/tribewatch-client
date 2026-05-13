@@ -481,9 +481,18 @@ def _discover_tribe_name_console(
 def _apply_resolution_preset(cfg: object) -> bool:
     """Detect game resolution and apply derived bbox presets.
 
-    Returns True if the resolution is verified or matches an existing
-    calibration; False if the resolution is unverified and the user
-    has no calibration for it (caller should force the setup wizard).
+    Returns True when usable bboxes have been applied (either a fresh
+    derived preset or a previously-saved calibration). Returns False
+    only when no resolution could be detected AND the user has no
+    saved calibration to fall back to — in that case the caller should
+    force the setup wizard because the dataclass default bbox is
+    unusable.
+
+    Unverified-but-derived resolutions no longer trigger the wizard:
+    derive_preset now projects through render→window so non-16:9
+    stretched modes land correctly, and the 1280x720/1920x1080/2560x1080
+    verified set is a small subset of the (window, render) pairs that
+    work fine via the scaling math.
     """
     log = logging.getLogger(__name__)
     try:
@@ -531,6 +540,10 @@ def _apply_resolution_preset(cfg: object) -> bool:
 
         verified = is_verified_resolution(render_size)
         preset = derive_preset(render_size, window_resolution=window_size)
+        # Either case is fine to return as True: derive_preset now
+        # projects through render→window so non-16:9 / stretched modes
+        # land correctly without the wizard's hand-tuning step.
+        applied_ok = True
 
         if cal_window and (not window_matches or not render_matches):
             log.info(
@@ -558,7 +571,7 @@ def _apply_resolution_preset(cfg: object) -> bool:
             window_size[0], window_size[1], stretch_note,
             preset["tribe_log"], preset["parasaur"], preset["tribe"],
         )
-        return verified
+        return applied_ok
     except Exception:
         log.debug("Resolution preset auto-apply failed", exc_info=True)
         return True
@@ -657,22 +670,17 @@ def _cmd_run(config_path: Path, *, skip_unverified_setup: bool = False) -> None:
     if is_frozen():
         _check_for_updates()
 
-    verified = _apply_resolution_preset(cfg)
-    if not verified and not skip_unverified_setup:
-        try:
-            from tribewatch.server_id import get_game_resolution
-            res = get_game_resolution()
-        except Exception:
-            res = None
-        res_str = f"{res[0]}x{res[1]}" if res else "your current"
+    ok = _apply_resolution_preset(cfg)
+    if not ok and not skip_unverified_setup:
         print()
         print("=" * 70)
-        print(f"  Unverified resolution: {res_str}")
+        print("  Could not detect game resolution")
         print("=" * 70)
         print(
-            "  TribeWatch derived capture regions for this resolution from the\n"
-            "  1920x1080 baseline, but it has not been hand-verified. The setup\n"
-            "  wizard will now open so you can confirm or adjust the regions."
+            "  TribeWatch could not read the game's resolution from either the\n"
+            "  ARK window or GameUserSettings.ini, and no previous calibration\n"
+            "  is saved. The setup wizard will now open so you can draw the\n"
+            "  capture regions manually."
         )
         print("=" * 70)
         print()

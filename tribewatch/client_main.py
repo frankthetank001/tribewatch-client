@@ -193,26 +193,23 @@ def main() -> None:
     if is_frozen():
         _check_for_updates()
 
-    verified = _apply_resolution_preset(cfg)
-    if not verified and not args.setup:
-        # Same forced-setup gate as __main__._cmd_run: derived presets
-        # for unverified resolutions are naive scaled-from-1080p guesses
-        # and are usually way off for non-16:9 aspect ratios. Force the
-        # user through the calibration wizard before running.
-        try:
-            from tribewatch.server_id import get_game_resolution
-            res = get_game_resolution()
-        except Exception:
-            res = None
-        res_str = f"{res[0]}x{res[1]}" if res else "your current"
+    ok = _apply_resolution_preset(cfg)
+    if not ok and not args.setup:
+        # Only forces the wizard when we can't detect the resolution
+        # at all AND have no saved calibration to fall back on. Once
+        # derive_preset learned to project render→window, the
+        # "unverified but derived" path produces correct bboxes for
+        # any aspect ratio (incl. stretched borderless modes), so the
+        # wizard no longer needs to gate on the verified set.
         print()
         print("=" * 70)
-        print(f"  Unverified resolution: {res_str}")
+        print("  Could not detect game resolution")
         print("=" * 70)
         print(
-            "  TribeWatch derived capture regions for this resolution from the\n"
-            "  1920x1080 baseline, but it has not been hand-verified. The setup\n"
-            "  wizard will now open so you can confirm or adjust the regions."
+            "  TribeWatch could not read the game's resolution from either the\n"
+            "  ARK window or GameUserSettings.ini, and no previous calibration\n"
+            "  is saved. The setup wizard will now open so you can draw the\n"
+            "  capture regions manually."
         )
         print("=" * 70)
         print()
