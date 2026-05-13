@@ -256,18 +256,11 @@ def send_click(title: str, client_x: int, client_y: int) -> bool:
 def get_active_resolution(window_title: str = "ArkAscended") -> tuple[int, int] | None:
     """Return the resolution that should drive bbox preset selection.
 
-    Single source of truth so the startup preset path
-    (``__main__._apply_resolution_preset``) and the heartbeat path
-    (``app._check_resolution_scaling``) can never disagree:
-
-      1. Locate the game window by title and read its actual client-area
-         size via ``GetClientRect``. This is what the GPU is rendering
-         and what subsequent captures will be cropped against.
-      2. Fall back to ``GameUserSettings.ini``'s ``ResolutionSizeX/Y``
-         only when no window can be found (e.g. TribeWatch launched
-         before ARK).
-
-    Returns ``(width, height)`` or ``None`` if neither source resolves.
+    Window client size takes precedence (it's what we crop against),
+    with ``GameUserSettings.ini`` as the fallback when no window can be
+    found. For the render-vs-window distinction — needed when the game
+    renders at a different resolution than the window is displaying —
+    use :func:`get_active_resolution_pair`.
     """
     if _IS_WIN32 and window_title:
         hwnd = _find_window_by_title(window_title)
@@ -280,6 +273,50 @@ def get_active_resolution(window_title: str = "ArkAscended") -> tuple[int, int] 
         return get_game_resolution()
     except Exception:
         return None
+
+
+def get_active_resolution_pair(
+    window_title: str = "ArkAscended",
+) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """Return ``(window_size, render_size)`` for bbox preset derivation.
+
+    Two resolutions matter for capture:
+      * **Window client size** — what ``_grab_window`` actually crops
+        against. Read via ``GetClientRect``.
+      * **Render resolution** — what UE lays the HUD against. Read from
+        ``GameUserSettings.ini`` (``ResolutionSizeX/Y``).
+
+    They usually match (the typical native-windowed case), but ARK can
+    render at a smaller resolution and stretch to fill a larger window
+    (anamorphic / "stretched" borderless modes). In that case the HUD
+    layout follows the render res and gets stretched into the window —
+    bboxes derived using only the window size land in the wrong place.
+
+    Both values fall back to the other when one source is unavailable.
+    Returns ``None`` only when neither source resolves.
+    """
+    window_size: tuple[int, int] | None = None
+    render_size: tuple[int, int] | None = None
+
+    if _IS_WIN32 and window_title:
+        hwnd = _find_window_by_title(window_title)
+        if hwnd:
+            window_size = get_window_client_size(hwnd)
+    try:
+        from tribewatch.server_id import get_game_resolution
+        render_size = get_game_resolution()
+    except Exception:
+        render_size = None
+
+    if window_size is None and render_size is None:
+        return None
+    # When one source is missing, mirror the other so callers don't
+    # have to special-case None.
+    if window_size is None:
+        window_size = render_size
+    if render_size is None:
+        render_size = window_size
+    return (window_size, render_size)
 
 
 def get_window_client_size(hwnd: int) -> tuple[int, int] | None:

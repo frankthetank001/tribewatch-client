@@ -105,7 +105,8 @@ class GeneralConfig:
     state_file: str = "tribewatch_state.json"
     monitor: int = 0  # monitor index for screen capture
     window_title: str = "ArkAscended"  # window capture by title; empty = full screen capture
-    calibration_resolution: list[int] = field(default_factory=list)  # [width, height] at calibration time
+    calibration_resolution: list[int] = field(default_factory=list)  # [w, h] of the window at calibration time
+    calibration_render_resolution: list[int] = field(default_factory=list)  # [w, h] of the game render at calibration time (UE's ResolutionSizeX/Y)
 
 
 @dataclass
@@ -475,7 +476,7 @@ def _config_to_dict(cfg: TribeWatchConfig) -> dict[str, Any]:
 
 # Which top-level sections and general fields belong to each mode.
 _CLIENT_SECTIONS = {"server", "tribe_log", "general", "parasaur", "tribe", "reconnect"}
-_CLIENT_GENERAL_FIELDS = {"log_level", "state_file", "monitor", "window_title", "calibration_resolution"}
+_CLIENT_GENERAL_FIELDS = {"log_level", "state_file", "monitor", "window_title", "calibration_resolution", "calibration_render_resolution"}
 _CLIENT_PARASAUR_FIELDS = {"bbox", "interval", "clear_delay", "grace_period", "ocr_engine", "parasaurs"}
 _CLIENT_SERVER_FIELDS = {"server_url", "client_token"}  # mode is a CLI flag, auth_token is server-side
 _SERVER_SECTIONS = {"server", "discord", "alerts", "general", "web", "generator", "presence", "todo_summary", "discord_notifications"}
@@ -505,10 +506,14 @@ def _filter_for_mode(data: dict[str, Any], mode: str) -> dict[str, Any]:
             filtered["parasaur"] = {
                 k: v for k, v in filtered["parasaur"].items() if k in _CLIENT_PARASAUR_FIELDS
             }
-        # Persist calibration_resolution in general if set
+        # Persist calibration_resolution (and the render-side companion)
+        # in general if set
         cal_res = data.get("general", {}).get("calibration_resolution")
         if cal_res:
             filtered.setdefault("general", {})["calibration_resolution"] = cal_res
+        cal_render_res = data.get("general", {}).get("calibration_render_resolution")
+        if cal_render_res:
+            filtered.setdefault("general", {})["calibration_render_resolution"] = cal_render_res
         # Only persist client_token (no mode/auth_token/server_url — standalone is localhost)
         server_data = data.get("server", {})
         if server_data.get("client_token"):
