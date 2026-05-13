@@ -311,6 +311,38 @@ _MIN_OCR_LENGTH = 30
 _MAX_RETRIES = 2
 
 
+def ocr_screenshot_b64_sync(b64: str, engine: str = "paddleocr") -> str:
+    """OCR a base64-encoded JPEG/PNG screenshot for the reconnect debug flow.
+
+    This is a thin, sync wrapper for use in places where we already have
+    the bytes and just want the text — e.g. saving a per-attempt
+    reconnect record. Skips the tribe-log contrast stretch (the source
+    screen is a title/loading/menu page, not a log) and runs the chosen
+    engine's ``_sync`` path directly. Returns ``""`` on any failure so
+    callers can ship the record without an OCR result blocking it.
+    """
+    if not b64:
+        return ""
+    try:
+        import base64
+        import io
+
+        img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+        if engine == "winrt":
+            return _ocr_winrt_sync(img)
+        if engine == "tesseract":
+            return _ocr_tesseract_sync(img)
+        if engine == "easyocr":
+            return _ocr_easyocr_sync(img)
+        if engine == "paddleocr":
+            return _ocr_paddleocr_sync(img)
+        log.debug("ocr_screenshot_b64_sync: unknown engine %r", engine)
+        return ""
+    except Exception:
+        log.debug("ocr_screenshot_b64_sync failed", exc_info=True)
+        return ""
+
+
 async def recognize(
     img: Image.Image,
     engine: str = "winrt",

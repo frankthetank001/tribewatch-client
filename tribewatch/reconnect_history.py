@@ -68,6 +68,7 @@ class ReconnectRecord:
         client_phase: dict,
         screenshot_start: str = "",
         screenshot_start_b64: str = "",
+        screenshot_start_ocr: str = "",
         resolution: tuple[int, int] | None = None,
     ) -> None:
         self.started_at = _now_iso()
@@ -79,6 +80,7 @@ class ReconnectRecord:
         self.client_phase = client_phase
         self.screenshot_start = screenshot_start
         self.screenshot_start_b64 = screenshot_start_b64
+        self.screenshot_start_ocr = screenshot_start_ocr
         self.resolution = resolution
 
         # Filled in on completion
@@ -89,6 +91,7 @@ class ReconnectRecord:
         self.switched_to_browser: bool = False
         self.screenshot_end: str = ""
         self.screenshot_end_b64: str = ""
+        self.screenshot_end_ocr: str = ""
         self.duration_secs: float = 0
 
     def finalise(
@@ -99,6 +102,7 @@ class ReconnectRecord:
         switched_to_browser: bool = False,
         screenshot_end: str = "",
         screenshot_end_b64: str = "",
+        screenshot_end_ocr: str = "",
     ) -> None:
         self.ended_at = _now_iso()
         self.duration_secs = round(time.monotonic() - self._start_mono, 1)
@@ -108,6 +112,7 @@ class ReconnectRecord:
         self.switched_to_browser = switched_to_browser
         self.screenshot_end = screenshot_end
         self.screenshot_end_b64 = screenshot_end_b64
+        self.screenshot_end_ocr = screenshot_end_ocr
 
     def to_dict(self, include_images: bool = False) -> dict:
         d: dict = {
@@ -129,6 +134,8 @@ class ReconnectRecord:
                 f"{self.resolution[0]}x{self.resolution[1]}"
                 if self.resolution else ""
             ),
+            "screenshot_start_ocr": self.screenshot_start_ocr,
+            "screenshot_end_ocr": self.screenshot_end_ocr,
         }
         if include_images:
             d["screenshot_start_b64"] = self.screenshot_start_b64
