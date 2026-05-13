@@ -196,37 +196,57 @@ def cmd_setup(config_path: Path) -> None:
     # swap in the preset for the current resolution so the overlay shows
     # the right "existing" bboxes to keep/redraw.
     try:
-        from tribewatch.server_id import get_game_resolution
+        from tribewatch.capture import get_active_resolution_pair
         from tribewatch.calibrate import get_preset
 
-        current_res = get_game_resolution()
-        cal_res = data.get("general", {}).get("calibration_resolution")
+        cfg_general = data.get("general", {})
+        window_title = cfg_general.get("window_title", "ArkAscended")
+        pair = get_active_resolution_pair(window_title=window_title)
+        cal_window = cfg_general.get("calibration_resolution")
+        cal_render = cfg_general.get("calibration_render_resolution")
+
         # Apply a preset as the starting bboxes when:
         #   - we have no saved calibration at all (fresh / post-reset), OR
-        #   - the saved calibration is for a different resolution than the
-        #     game is currently at.
+        #   - the saved calibration is for a different window OR render
+        #     resolution than the game is currently at.
         # Otherwise the wizard would show the dataclass default
         # [0, 0, 800, 600] as the "existing" bbox, which is useless.
-        needs_preset = bool(current_res) and (
-            not cal_res or tuple(cal_res) != current_res
-        )
-        if needs_preset:
-            if cal_res:
+        if pair is None:
+            needs_preset = False
+        else:
+            current_window, current_render = pair
+            window_changed = not cal_window or tuple(cal_window) != current_window
+            render_changed = (
+                bool(cal_render) and tuple(cal_render) != current_render
+            )
+            needs_preset = window_changed or render_changed
+
+        if needs_preset and pair is not None:
+            current_window, current_render = pair
+            stretch_note = ""
+            if current_window != current_render:
+                stretch_note = (
+                    f" (stretched from render {current_render[0]}x{current_render[1]})"
+                )
+            if cal_window:
                 print(
-                    f"Resolution changed: calibrated at {cal_res[0]}x{cal_res[1]}, "
-                    f"game is now at {current_res[0]}x{current_res[1]}"
+                    f"Resolution changed: calibrated at "
+                    f"{cal_window[0]}x{cal_window[1]}, "
+                    f"game is now at "
+                    f"{current_window[0]}x{current_window[1]}{stretch_note}"
                 )
             else:
                 print(
                     f"No saved calibration. Game is at "
-                    f"{current_res[0]}x{current_res[1]}."
+                    f"{current_window[0]}x{current_window[1]}{stretch_note}."
                 )
-            preset = get_preset(current_res)
+            preset = get_preset(current_render, window_resolution=current_window)
             if preset:
                 print("Using preset for current resolution as starting bboxes.")
                 for section, key in (("tribe_log", "tribe_log"), ("parasaur", "parasaur"), ("tribe", "tribe")):
                     data.setdefault(section, {})["bbox"] = list(preset[key])
-                data.setdefault("general", {})["calibration_resolution"] = list(current_res)
+                data.setdefault("general", {})["calibration_resolution"] = list(current_window)
+                data.setdefault("general", {})["calibration_render_resolution"] = list(current_render)
             else:
                 print("No preset available for current resolution — existing bboxes cleared.")
                 for section in ("tribe_log", "parasaur", "tribe"):

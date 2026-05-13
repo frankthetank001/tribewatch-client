@@ -487,42 +487,77 @@ class TribeWatchApp:
     def _check_resolution_scaling(self) -> None:
         """Check game resolution and swap to preset bboxes if it changed.
 
-        Uses ``capture.last_window_size`` as the cached fast path (set
-        on every successful window grab), and falls back to the shared
-        ``get_active_resolution`` helper otherwise — same source the
-        startup path (``__main__._apply_resolution_preset``) uses, so
-        the two never disagree about which preset is current.
+        Tracks the ``(window_size, render_size)`` pair — same source the
+        startup path (``__main__._apply_resolution_preset``) uses — so a
+        change to either triggers a re-derive. The window size has a
+        cached fast path via ``capture.last_window_size``; the render
+        size is always fetched from ``GameUserSettings.ini`` so we pick
+        up in-game resolution changes between runs.
         """
-        game_res = getattr(self.capture, "last_window_size", None)
-        if not game_res:
-            from tribewatch.capture import get_active_resolution
-            window_title = getattr(self.config.general, "window_title", "ArkAscended")
-            game_res = get_active_resolution(window_title=window_title)
-        if not game_res:
+        from tribewatch.capture import get_active_resolution_pair
+
+        window_title = getattr(self.config.general, "window_title", "ArkAscended")
+        window_cached = getattr(self.capture, "last_window_size", None)
+
+        pair = get_active_resolution_pair(window_title=window_title)
+        if pair is None and window_cached:
+            pair = (window_cached, window_cached)
+        if pair is None:
             return
-        if game_res == getattr(self, "_last_game_resolution", None):
+
+        window_size, render_size = pair
+        # Prefer the cached window size when it's available — it
+        # reflects what the most recent capture actually grabbed, even
+        # if the window has briefly disappeared between heartbeats.
+        if window_cached:
+            window_size = window_cached
+            if pair[1] == pair[0]:
+                # ini fell back to window when render wasn't available;
+                # keep them in sync with the cached window size.
+                render_size = window_cached
+
+        current = (window_size, render_size)
+        if current == getattr(self, "_last_resolution_pair", None):
             return  # no change
 
         from tribewatch.calibrate import get_preset
 
-        preset = get_preset(game_res)
-        self._last_game_resolution = game_res
+        preset = get_preset(render_size, window_resolution=window_size)
+        self._last_resolution_pair = current
+        # Keep the legacy single-tuple attribute around so callers that
+        # only care about window size (heartbeats, status broadcasts)
+        # don't have to learn the new shape.
+        self._last_game_resolution = window_size
 
         if preset:
-            self._apply_preset(preset, game_res)
+            self._apply_preset(preset, window_size, render_size)
         else:
             log.warning(
-                "Resolution changed to %dx%d but no preset available — "
-                "run --setup to calibrate",
-                game_res[0], game_res[1],
+                "Resolution changed to window=%dx%d render=%dx%d but no "
+                "preset available — run --setup to calibrate",
+                window_size[0], window_size[1], render_size[0], render_size[1],
             )
 
-    def _apply_preset(self, preset: dict[str, list[int]], resolution: tuple[int, int]) -> None:
-        """Apply a resolution preset to all capture regions."""
+    def _apply_preset(
+        self,
+        preset: dict[str, list[int]],
+        window_size: tuple[int, int],
+        render_size: tuple[int, int] | None = None,
+    ) -> None:
+        """Apply a resolution preset to all capture regions.
+
+        Logs the window size and, when different, the render size that
+        produced the bbox layout.
+        """
         self.capture.bbox = list(preset["tribe_log"])
+        stretch_note = ""
+        if render_size and render_size != window_size:
+            stretch_note = (
+                f" [stretched from render {render_size[0]}x{render_size[1]}]"
+            )
         log.info(
-            "Applied preset tribe_log bbox %s for %dx%d",
-            preset["tribe_log"], resolution[0], resolution[1],
+            "Applied preset tribe_log bbox %s for %dx%d%s",
+            preset["tribe_log"], window_size[0], window_size[1], stretch_note,
         )
 
         if getattr(self, "_parasaur_capture", None) and "parasaur" in preset:
@@ -874,6 +909,16 @@ class TribeWatchApp:
         status["client_version"] = _client_version
         game_res = getattr(self, "_last_game_resolution", None)
         status["resolution"] = f"{game_res[0]}x{game_res[1]}" if game_res else ""
+        # Surface the render-side resolution when it differs from the
+        # window — lets the dashboard show "stretched" mode on hover. We
+        # send the render res unconditionally (even when it matches) so
+        # the dashboard can decide presentation; an empty string means
+        # we couldn't read GameUserSettings.ini.
+        pair = getattr(self, "_last_resolution_pair", None)
+        if pair and pair[1]:
+            status["render_resolution"] = f"{pair[1][0]}x{pair[1][1]}"
+        else:
+            status["render_resolution"] = ""
 
         # Surface tunable settings so the dashboard tile can show their
         # current state without an extra API call.

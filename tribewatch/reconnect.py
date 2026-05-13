@@ -34,6 +34,11 @@ _LOAD_TIMEOUT = 180    # 3 min for game to load after clicking join
 _BROWSER_TIMEOUT = 60  # 1 min for server browser UI elements
 _POLL_INTERVAL = 2     # seconds between polls (was 5 — faster detection)
 _TRIBE_LOG_DELAY = 30  # seconds to wait before opening tribe log
+# Cap on the post-load settle-phase JOIN-dialog clicker so a persistent
+# HUD element that OCRs as "JOIN" can't pin the reconnect in waiting_load
+# forever (see _open_tribe_log).
+_MAX_EXTRA_JOIN_CLICKS = 5
+_MAX_SETTLE_MULTIPLIER = 5  # wall-clock budget = tribe_log_delay × this
 _KILL_TIMEOUT = 30     # seconds to wait for process to exit
 _KILL_STEAM_DELAY = 3  # seconds to let Steam register game exit
 _INITIAL_BACKOFF = 30  # first retry delay (seconds)
@@ -955,8 +960,26 @@ class ReconnectSequence:
         )
         # Active poll during the settle delay so we can click any JOIN
         # dialogs that pop up during loading transitions.
+        #
+        # Bounded: at most ``_MAX_EXTRA_JOIN_CLICKS`` settle-timer resets
+        # AND at most ``_tribe_log_delay * _MAX_SETTLE_MULTIPLIER`` seconds
+        # of wall-clock total. Without these, a persistent HUD element
+        # that OCRs as "JOIN" (event banner, NPC prompt, alliance icon)
+        # holds the loop forever because every detection resets ``elapsed``
+        # to zero. Verified the hard way on a client stuck at the exact
+        # same (1712, 946) coordinate for 5+ hours / 1808 clicks.
         elapsed = 0.0
+        extra_join_clicks = 0
+        wall_start = _time.monotonic()
+        wall_budget = self._tribe_log_delay * _MAX_SETTLE_MULTIPLIER
         while elapsed < self._tribe_log_delay:
+            if _time.monotonic() - wall_start >= wall_budget:
+                await self._report(
+                    "waiting_load",
+                    f"Settle phase exceeded {int(wall_budget)}s wall-clock budget "
+                    f"after {extra_join_clicks} JOIN click(s) — proceeding to open tribe log",
+                )
+                break
             await asyncio.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
             hwnd = _find_window_by_title(self._window_title)
@@ -978,9 +1001,19 @@ class ReconnectSequence:
             # main-menu screens we shouldn't be on by this point.
             extra_join = self._find_join_dialog_coords(img)
             if extra_join is not None:
+                if extra_join_clicks >= _MAX_EXTRA_JOIN_CLICKS:
+                    await self._report(
+                        "waiting_load",
+                        f"Saw 'JOIN' at ({extra_join[0]}, {extra_join[1]}) again but "
+                        f"already clicked {extra_join_clicks} times — likely a persistent "
+                        f"HUD element, proceeding to open tribe log",
+                    )
+                    break
+                extra_join_clicks += 1
                 await self._report(
                     "waiting_load",
-                    f"Extra JOIN button at ({extra_join[0]}, {extra_join[1]}) — clicking, resetting settle timer",
+                    f"Extra JOIN button at ({extra_join[0]}, {extra_join[1]}) — "
+                    f"clicking ({extra_join_clicks}/{_MAX_EXTRA_JOIN_CLICKS}), resetting settle timer",
                 )
                 focus_window(self._window_title)
                 await asyncio.sleep(0.3)

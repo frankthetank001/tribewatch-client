@@ -50,55 +50,92 @@ _VERIFIED_RESOLUTIONS: set[tuple[int, int]] = {
 }
 
 
-def is_verified_resolution(resolution: tuple[int, int]) -> bool:
-    """Return True if the derived preset for *resolution* has been hand-verified."""
-    return tuple(resolution) in _VERIFIED_RESOLUTIONS
+def is_verified_resolution(render_resolution: tuple[int, int]) -> bool:
+    """Return True if the derived preset for *render_resolution* has been hand-verified.
 
-
-def derive_preset(resolution: tuple[int, int]) -> dict[str, list[int]]:
-    """Compute bboxes for *resolution* by scaling the 1920x1080 baseline.
-
-    ARK's HUD is a 16:9 inner viewport centered inside the window:
-      * Wider-than-16:9 (e.g. ultrawide 21:9) → pillarboxed; the inner
-        viewport sits at full window height and gets black bars on the
-        left and right.
-      * Narrower-than-16:9 (e.g. 1360x768 ≈ 1.77, or 1280x800 = 1.6)
-        → letterboxed; the inner viewport sits at full window width
-        and gets bars on top and bottom.
-      * Exactly 16:9 → no bars, the whole window is the inner viewport.
-
-    The previous formula always assumed pillarbox geometry, which
-    produced negative ``offset_x`` for narrower-than-16:9 ratios — close
-    enough to harmless for 1360x768 (≈2 px error) but visibly wrong for
-    something like 1280x800 (≈70 px error). Branch on aspect to compute
-    the right one.
+    The verified check is keyed on the game's render resolution (i.e.
+    ``GameUserSettings.ini``'s ``ResolutionSizeX/Y``) since that's what
+    determines HUD layout. The window can be a different size when the
+    user runs at a non-native aspect ratio (e.g. render 2560x700 in a
+    2560x1080 borderless window) — the projection from render to window
+    is applied in ``derive_preset`` after layout is computed.
     """
-    W, H = int(resolution[0]), int(resolution[1])
+    return tuple(render_resolution) in _VERIFIED_RESOLUTIONS
+
+
+def derive_preset(
+    render_resolution: tuple[int, int],
+    window_resolution: tuple[int, int] | None = None,
+) -> dict[str, list[int]]:
+    """Compute capture bboxes for the given render+window resolution pair.
+
+    ARK's HUD is laid out against a 16:9 inner viewport at the *render*
+    resolution (the one in ``GameUserSettings.ini``'s
+    ``ResolutionSizeX/Y``), then the rendered frame is scaled to fill
+    the window's client area. So a user running render 2560x700 in a
+    2560x1080 window sees the HUD vertically stretched by 1.54x even
+    though our capture is against the 2560x1080 window.
+
+    Layout (16:9 inner viewport at *render_resolution*):
+      * Wider-than-16:9 (e.g. ultrawide 21:9) → pillarboxed; the inner
+        viewport sits at full render height and gets bars left/right.
+      * Narrower-than-16:9 (e.g. 1280x800 = 1.6) → letterboxed; the
+        inner viewport sits at full render width and gets bars top/bottom.
+      * Exactly 16:9 → no bars, the whole render frame is the viewport.
+
+    Projection (render coords → window coords):
+      * If *window_resolution* is None or equal to *render_resolution*,
+        the bbox is returned directly in render coords (which equal
+        window coords in that case).
+      * Otherwise each coord is scaled by
+        ``(window_w/render_w, window_h/render_h)`` to map into the
+        window's client-area pixel space.
+
+    Returns a dict of ``{region_name: [x1, y1, x2, y2]}`` in window
+    coordinates ready for ``_grab_window(hwnd, bbox=...)``.
+    """
+    Rw, Rh = int(render_resolution[0]), int(render_resolution[1])
     bw, bh = _BASELINE_RES
 
-    target_aspect = W / H if H else 0
+    target_aspect = Rw / Rh if Rh else 0
     baseline_aspect = bw / bh
 
     if target_aspect >= baseline_aspect:
-        # Pillarbox: inner 16:9 viewport at the full target height.
-        scale = H / bh
-        inner_w = round(H * bw / bh)
-        offset_x = (W - inner_w) / 2
+        # Pillarbox: inner 16:9 viewport at the full render height.
+        scale = Rh / bh
+        inner_w = round(Rh * bw / bh)
+        offset_x = (Rw - inner_w) / 2
         offset_y = 0.0
     else:
-        # Letterbox: inner 16:9 viewport at the full target width.
-        scale = W / bw
-        inner_h = round(W * bh / bw)
+        # Letterbox: inner 16:9 viewport at the full render width.
+        scale = Rw / bw
+        inner_h = round(Rw * bh / bw)
         offset_x = 0.0
-        offset_y = (H - inner_h) / 2
+        offset_y = (Rh - inner_h) / 2
+
+    # Render→window projection. When the two sizes match (the common
+    # case), sx == sy == 1.0 and the math collapses to the legacy
+    # behaviour exactly.
+    if window_resolution is None or tuple(window_resolution) == (Rw, Rh):
+        sx, sy = 1.0, 1.0
+    else:
+        Ww, Wh = int(window_resolution[0]), int(window_resolution[1])
+        sx = Ww / Rw if Rw else 1.0
+        sy = Wh / Rh if Rh else 1.0
 
     out: dict[str, list[int]] = {}
     for region, (x1, y1, x2, y2) in _BASELINE_BBOXES.items():
+        # Stage 1: baseline → render coords (16:9 inner viewport).
+        rx1 = x1 * scale + offset_x
+        ry1 = y1 * scale + offset_y
+        rx2 = x2 * scale + offset_x
+        ry2 = y2 * scale + offset_y
+        # Stage 2: render → window coords (anamorphic stretch).
         out[region] = [
-            int(round(x1 * scale + offset_x)),
-            int(round(y1 * scale + offset_y)),
-            int(round(x2 * scale + offset_x)),
-            int(round(y2 * scale + offset_y)),
+            int(round(rx1 * sx)),
+            int(round(ry1 * sy)),
+            int(round(rx2 * sx)),
+            int(round(ry2 * sy)),
         ]
     return out
 
@@ -112,31 +149,43 @@ def _get_screen_resolution() -> tuple[int, int] | None:
         return None
 
 
-def get_preset(resolution: tuple[int, int] | None = None) -> dict[str, list[int]] | None:
-    """Return derived bboxes for *resolution*.
+def get_preset(
+    render_resolution: tuple[int, int] | None = None,
+    window_resolution: tuple[int, int] | None = None,
+) -> dict[str, list[int]] | None:
+    """Return derived bboxes for the given render+window resolution pair.
 
-    Pass *resolution* explicitly or omit to auto-detect from the game INI.
-    Always returns a derived preset — never None — unless the resolution
-    could not be detected at all.
+    Pass *render_resolution* explicitly or omit to auto-detect from the
+    game INI. Pass *window_resolution* explicitly when the window is a
+    different size to the game's render resolution (e.g. stretched
+    borderless modes) — when omitted the bbox is returned in render
+    coords, equivalent to assuming render == window.
     """
-    if resolution is None:
+    if render_resolution is None:
         try:
             from tribewatch.server_id import get_game_resolution
-            resolution = get_game_resolution()
+            render_resolution = get_game_resolution()
         except Exception:
             pass
-    if resolution is None:
+    if render_resolution is None:
         return None
-    return derive_preset(resolution)
+    return derive_preset(render_resolution, window_resolution=window_resolution)
 
 
-def get_default_bbox(resolution: tuple[int, int] | None = None) -> list[int]:
-    """Return the derived tribe log bbox for the given (or detected) resolution."""
-    if resolution is None:
-        resolution = _get_screen_resolution()
-    if resolution is None:
+def get_default_bbox(
+    render_resolution: tuple[int, int] | None = None,
+    window_resolution: tuple[int, int] | None = None,
+) -> list[int]:
+    """Return the derived tribe log bbox for the given (or detected) resolution.
+
+    Falls back to the screen size from ``GetSystemMetrics`` when neither
+    is provided, treating render == window in that case.
+    """
+    if render_resolution is None:
+        render_resolution = _get_screen_resolution()
+    if render_resolution is None:
         return list(_BASELINE_BBOXES["tribe_log"])
-    return derive_preset(resolution)["tribe_log"]
+    return derive_preset(render_resolution, window_resolution=window_resolution)["tribe_log"]
 
 
 class _OverlayApp:
