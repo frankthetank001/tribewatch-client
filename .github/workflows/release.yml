@@ -68,10 +68,6 @@ jobs:
       - name: Build exe and installer
         run: python build.py --installer
 
-      - name: Create ZIP archive of portable build
-        shell: pwsh
-        run: Compress-Archive -Path dist\TribeWatch\* -DestinationPath dist\TribeWatch-${{ steps.version.outputs.version }}-portable.zip
-
       - name: Build release notes
         shell: bash
         env:
@@ -146,7 +142,6 @@ jobs:
           body_path: release-notes.md
           files: |
             dist/TribeWatch-Setup.exe
-            dist/TribeWatch-${{ steps.version.outputs.version }}-portable.zip
 
       - name: Force-update release body
         # softprops/action-gh-release@v2 reuses an existing release for

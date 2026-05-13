@@ -360,10 +360,7 @@ This repo contains the **client** component. The server is hosted and managed se
 
 ### Install
 
-Download from [Releases](https://github.com/frankthetank001/tribewatch-client/releases):
-
-- **TribeWatch-Setup.exe** — installer with Start Menu shortcut, optional desktop icon, optional auto-start with Windows
-- **TribeWatch-portable.zip** — extract anywhere and run `TribeWatch.exe`
+Download **TribeWatch-Setup.exe** from [Releases](https://github.com/frankthetank001/tribewatch-client/releases). It installs to `%LOCALAPPDATA%\Programs\TribeWatch` with a Start Menu shortcut, optional desktop icon, and optional auto-start with Windows.
 
 Or install from source (Python 3.12+):
 

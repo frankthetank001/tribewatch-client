@@ -1204,8 +1204,8 @@ def _handle_reconnect(
     # Re-runs before each attempt so per-attempt rows show the actual
     # game state at that retry's start (e.g. zombie window, Steam prompt,
     # Windows error popup blocking input).
-    def _capture_start_screenshot() -> tuple[str, str, tuple[int, int] | None]:
-        path, b64 = "", ""
+    def _capture_start_screenshot() -> tuple[str, str, str, tuple[int, int] | None]:
+        path, b64, ocr_text = "", "", ""
         resolution: tuple[int, int] | None = None
         try:
             from tribewatch.capture import (
@@ -1223,9 +1223,15 @@ def _handle_reconnect(
             log.debug("Failed to save reconnect start screenshot", exc_info=True)
         if resolution is None:
             resolution = getattr(getattr(app, "capture", None), "last_window_size", None)
-        return path, b64, resolution
+        if b64:
+            try:
+                from tribewatch.ocr_engine import ocr_screenshot_b64_sync
+                ocr_text = ocr_screenshot_b64_sync(b64, engine=ocr_engine)
+            except Exception:
+                log.debug("OCR on reconnect start screenshot failed", exc_info=True)
+        return path, b64, ocr_text, resolution
 
-    start_screenshot, start_screenshot_b64, start_resolution = _capture_start_screenshot()
+    start_screenshot, start_screenshot_b64, start_screenshot_ocr, start_resolution = _capture_start_screenshot()
 
     method = "browser" if use_browser else "direct"
     record = ReconnectRecord(
@@ -1236,12 +1242,14 @@ def _handle_reconnect(
         client_phase=client_phase,
         screenshot_start=start_screenshot,
         screenshot_start_b64=start_screenshot_b64,
+        screenshot_start_ocr=start_screenshot_ocr,
         resolution=start_resolution,
     )
     def _on_attempt_done(attempt_num, outcome, reason, screenshot_b64, attempt_method):
         """Save a history record for each individual attempt."""
         end_screenshot = ""
         end_screenshot_b64 = screenshot_b64 or ""
+        end_screenshot_ocr = ""
         if end_screenshot_b64 and outcome != "success":
             try:
                 import base64 as _b64, io as _io
@@ -1251,6 +1259,14 @@ def _handle_reconnect(
                 end_screenshot, _ = _save_screenshot(img, f"attempt{attempt_num}")
             except Exception:
                 pass
+        if end_screenshot_b64:
+            try:
+                from tribewatch.ocr_engine import ocr_screenshot_b64_sync
+                end_screenshot_ocr = ocr_screenshot_b64_sync(
+                    end_screenshot_b64, engine=ocr_engine,
+                )
+            except Exception:
+                log.debug("OCR on reconnect end screenshot failed", exc_info=True)
         # Re-query resolution at the moment this attempt finished — if
         # the OS has flipped display modes mid-sequence (monitor toggle,
         # RDP), each attempt's row will reflect what was actually being
@@ -1279,6 +1295,7 @@ def _handle_reconnect(
             client_phase=client_phase,
             screenshot_start=start_screenshot,
             screenshot_start_b64=start_screenshot_b64,
+            screenshot_start_ocr=start_screenshot_ocr,
             resolution=attempt_resolution,
         )
         rec.finalise(
@@ -1288,6 +1305,7 @@ def _handle_reconnect(
             switched_to_browser=(attempt_method == "browser" and method == "direct"),
             screenshot_end=end_screenshot,
             screenshot_end_b64=end_screenshot_b64,
+            screenshot_end_ocr=end_screenshot_ocr,
         )
         rec.save()
         if relay:
@@ -1302,11 +1320,11 @@ def _handle_reconnect(
         zombie ARK window, Steam re-prompt, or a Windows error popup
         stealing focus.
         """
-        nonlocal client_phase, start_screenshot, start_screenshot_b64
+        nonlocal client_phase, start_screenshot, start_screenshot_b64, start_screenshot_ocr
         if attempt_num == 1:
             return  # already captured at sequence init
         client_phase = _capture_phase()
-        start_screenshot, start_screenshot_b64, _ = _capture_start_screenshot()
+        start_screenshot, start_screenshot_b64, start_screenshot_ocr, _ = _capture_start_screenshot()
 
     seq = ReconnectSequence(
         window_title=window_title,
@@ -1332,6 +1350,8 @@ def _handle_reconnect(
                 trigger=trigger, auto=auto, method=method,
                 fail_count=fail_count, client_phase=client_phase,
                 screenshot_start=start_screenshot,
+                screenshot_start_b64=start_screenshot_b64,
+                screenshot_start_ocr=start_screenshot_ocr,
                 resolution=start_resolution,
             )
             rec.finalise(
