@@ -812,24 +812,29 @@ class TribeWatchApp:
             else:
                 status["monitoring"] = False
 
-            # Once-per-minute diagnostic: log the exact monitoring /
-            # active_play values being reported to the server, plus the
-            # underlying state that drives them. Lets us correlate the
-            # dashboard's per-client tile (which uses these flags) with
-            # what the client thinks it's saying — without this,
-            # "client shows as idle on the website" is undebuggable
-            # from the client log alone.
-            _last_status_diag = getattr(self, "_status_diag_last", 0.0)
-            if now_mono - _last_status_diag >= 60.0:
-                self._status_diag_last = now_mono
+            # State-change diagnostic: log the monitoring / active_play /
+            # log_header_visible / paused tuple only when it actually
+            # changes from the last time we logged it. Lets us correlate
+            # the dashboard's per-client tile with what the client
+            # thinks it's saying, without spamming the log with a
+            # repeating once-per-minute snapshot when nothing has
+            # actually moved.
+            _diag_state = (
+                bool(status.get("monitoring")),
+                bool(getattr(self, "_active_play", False)),
+                bool(self._log_header_visible),
+                bool(self._paused),
+            )
+            if _diag_state != getattr(self, "_status_diag_last", None):
+                self._status_diag_last = _diag_state
                 log.info(
                     "status: monitoring=%s active_play=%s "
                     "(log_header_visible=%s, visible_for=%.1fs, paused=%s)",
-                    status.get("monitoring"),
-                    getattr(self, "_active_play", False),
-                    self._log_header_visible,
+                    _diag_state[0],
+                    _diag_state[1],
+                    _diag_state[2],
                     (time.time() - visible_since) if visible_since else 0.0,
-                    self._paused,
+                    _diag_state[3],
                 )
 
         # Parasaur sessions
