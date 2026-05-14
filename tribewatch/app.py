@@ -950,6 +950,12 @@ class TribeWatchApp:
         status["screen_change_pct"] = getattr(self, "_screen_change_pct", 100.0)
         status["active_play"] = getattr(self, "_active_play", False)
         status["character_dead"] = getattr(self, "_character_dead", False)
+        # Canonical "time until idle-recovery fires" - computed by the
+        # same gating that _idle_screen_monitor uses, so the dashboard
+        # gets the same number the client itself would log. None when
+        # the countdown isn't running (log visible / playing / no AFK
+        # signal / recovery already triggered). 0 when about to fire.
+        status["idle_recovery_eta_secs"] = self._compute_idle_recovery_eta()
 
         # Component health
         status["components"] = {
@@ -1337,6 +1343,49 @@ class TribeWatchApp:
             if not self._running:
                 break
             await self.refresh_tribe_log(manual=False)
+
+    def _compute_idle_recovery_eta(self) -> int | None:
+        """Seconds until _idle_screen_monitor would press L to reopen the log.
+
+        Single source of truth for the dashboard's "Idle - opening tribe
+        log in X" subtitle. Mirrors the gating in _idle_screen_monitor:
+
+          * Returns None when the countdown is not running - the log is
+            visible, the user is actively playing, the client is paused,
+            no AFK signal has accumulated, or recovery has already been
+            attempted this cycle.
+          * Returns a non-negative integer when counting down (0 means
+            "threshold reached, about to fire on the next monitor tick").
+
+        Computed inline on each status push rather than cached so the
+        value matches the same idle_duration the monitor would see at
+        the moment we report it - no 30s lag from the monitor's own
+        sleep cadence.
+        """
+        if getattr(self, "_log_header_visible", False):
+            return None
+        if getattr(self, "_active_play", False):
+            return None
+        if getattr(self, "_paused", False):
+            return None
+        if getattr(self, "_idle_recovery_attempted", False):
+            return None
+        try:
+            from tribewatch.capture import get_idle_time_ms
+            input_idle_secs = get_idle_time_ms() / 1000.0
+        except Exception:
+            input_idle_secs = 0.0
+        still_since = getattr(self, "_screen_still_since", None)
+        screen_still_secs = (time.time() - still_since) if still_since else 0.0
+        idle_duration = max(screen_still_secs, input_idle_secs)
+        if idle_duration <= 0:
+            return None
+        _tl_idle = getattr(self.config.tribe_log, "idle_recovery_minutes", 0.0) or 0.0
+        threshold_secs = (
+            _tl_idle or getattr(self.config.alerts, "idle_alert_minutes", 10)
+        ) * 60
+        remaining = threshold_secs - idle_duration
+        return max(0, int(remaining))
 
     async def _idle_screen_monitor(self) -> None:
         """Detect idle screen and attempt to reopen tribe log / auto-reconnect.
