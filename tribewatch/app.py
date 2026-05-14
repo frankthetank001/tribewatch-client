@@ -240,6 +240,14 @@ class TribeWatchApp:
         self._screen_still_since: float | None = None  # time.time() when screen became static
         self._screen_change_pct: float = 100.0  # last measured change % (0-100)
         self._active_play: bool = False  # True iff ARK foreground + recent input (OS gate)
+        # Timestamp of the last cycle where _active_play was True - i.e.
+        # the user was actually interacting with ARK (foreground + input).
+        # Drives the "ARK-specific input idle" signal used by the
+        # idle-recovery countdown, replacing system-wide GetLastInputInfo
+        # which counted browser/Discord/etc activity as ARK activity.
+        # Defaults to startup time so a never-played session has a
+        # finite, monotonically-growing idle measurement from the start.
+        self._active_play_last_at: float = time.time()
         self._heartbeat_kick: asyncio.Event | None = None  # set to short-circuit heartbeat sleep
         self._idle_recovery_attempted: bool = False  # prevents repeated recovery attempts
         self._overlay = None  # StatusOverlay (set by __main__ if enabled)
@@ -1370,14 +1378,18 @@ class TribeWatchApp:
             return None
         if getattr(self, "_idle_recovery_attempted", False):
             return None
-        try:
-            from tribewatch.capture import get_idle_time_ms
-            input_idle_secs = get_idle_time_ms() / 1000.0
-        except Exception:
-            input_idle_secs = 0.0
+        # ARK-scoped input idle: how long since the user was actively
+        # interacting with the ARK window (foreground + input). Counts
+        # browsing the dashboard / Discord / other windows as "idle from
+        # ARK", because the recovery sequence will focus_window() ARK
+        # before pressing L anyway - there's no risk of an L landing in
+        # whatever non-ARK window the user happens to have foreground.
+        ark_input_idle_secs = time.time() - getattr(
+            self, "_active_play_last_at", time.time(),
+        )
         still_since = getattr(self, "_screen_still_since", None)
         screen_still_secs = (time.time() - still_since) if still_since else 0.0
-        idle_duration = max(screen_still_secs, input_idle_secs)
+        idle_duration = max(screen_still_secs, ark_input_idle_secs)
         # Require a meaningful idle accumulation before reporting a
         # countdown. Below this floor the user is actively interacting
         # with their PC (or sitting on ARK's animated main menu, where
@@ -1419,18 +1431,22 @@ class TribeWatchApp:
             if self._paused or not self.capture.window_found:
                 continue
 
-            # AFK detection: combine screen-stillness with system input-idle.
-            # Either signals "user is AFK" - input-idle covers animated
-            # screens (ARK main menu cinematic backdrop, loading screens)
-            # where the screen-still detector cannot latch.
-            from tribewatch.capture import get_idle_time_ms
-            input_idle_secs = get_idle_time_ms() / 1000.0
+            # AFK detection: combine screen-stillness with ARK-scoped
+            # input idle. Either signals "user is AFK from ARK" - the
+            # ARK-scoped fallback covers animated screens (main menu
+            # cinematic backdrop, loading screens) where the
+            # screen-still detector cannot latch, while still treating
+            # the user as AFK when they're focused on another window
+            # (browser, dashboard, etc.). Recovery focuses ARK before
+            # pressing L so non-ARK focus is not a safety concern.
+            ark_input_idle_secs = time.time() - self._active_play_last_at
             screen_still_secs = (
                 (time.time() - self._screen_still_since)
                 if self._screen_still_since is not None
                 else 0.0
             )
-            idle_duration = max(screen_still_secs, input_idle_secs)
+            idle_duration = max(screen_still_secs, ark_input_idle_secs)
+            input_idle_secs = ark_input_idle_secs  # for the log line below
 
             # If tribe log is visible, user is actively playing, or no AFK
             # signal at all, reset everything.
@@ -1587,6 +1603,11 @@ class TribeWatchApp:
         )
         was_active = self._active_play
         if playing:
+            # Bump the ARK-input-idle reference every cycle the user is
+            # actually interacting with ARK, not just on transitions.
+            # The idle-recovery countdown subtracts from this to decide
+            # when the user has been "AFK from ARK" long enough.
+            self._active_play_last_at = time.time()
             if not was_active:
                 self._active_play = True
                 log.info(
