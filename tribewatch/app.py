@@ -1378,7 +1378,15 @@ class TribeWatchApp:
         still_since = getattr(self, "_screen_still_since", None)
         screen_still_secs = (time.time() - still_since) if still_since else 0.0
         idle_duration = max(screen_still_secs, input_idle_secs)
-        if idle_duration <= 0:
+        # Require a meaningful idle accumulation before reporting a
+        # countdown. Below this floor the user is actively interacting
+        # with their PC (or sitting on ARK's animated main menu, where
+        # the screen-still detector can't latch and pixel jitter from
+        # the cinematic backdrop keeps the timer near zero). Reporting
+        # a "9m 59s" countdown in that state is mathematically correct
+        # but a UX lie - recovery isn't actually approaching.
+        _MIN_IDLE_FOR_COUNTDOWN = 30.0
+        if idle_duration < _MIN_IDLE_FOR_COUNTDOWN:
             return None
         _tl_idle = getattr(self.config.tribe_log, "idle_recovery_minutes", 0.0) or 0.0
         threshold_secs = (
