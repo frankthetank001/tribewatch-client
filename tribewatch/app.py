@@ -1011,27 +1011,24 @@ class TribeWatchApp:
             overlay.update("monitoring", "Monitoring")
             return
 
-        # AFK + log-not-visible — show idle/recovery countdown. Combine
-        # screen-stillness with system input-idle so animated screens
-        # (ARK main menu cinematic backdrop, loading screens) don't mask
-        # the user's true AFK state.
-        from tribewatch.capture import get_idle_time_ms
-        afk_secs = get_idle_time_ms() / 1000.0
-        still_since = self._screen_still_since
-        if still_since is not None:
-            afk_secs = max(afk_secs, time.time() - still_since)
-        if afk_secs > 0:
-            threshold = self.config.alerts.idle_alert_minutes * 60
-            remaining = threshold - afk_secs
-            if remaining > 0:
-                mins = int(remaining // 60)
-                secs = int(remaining % 60)
-                overlay.update("idle", f"Idle \u2022 opening log in {mins}m{secs:02d}s")
-            else:
-                overlay.update("recovery", "Recovering...")
+        # AFK + log-not-visible - show idle/recovery countdown.
+        # Route through the same _compute_idle_recovery_eta helper that
+        # produces the dashboard countdown so the in-game overlay and
+        # the web dashboard always agree on what the timer says.
+        # Previously this had its own copy using system-wide
+        # GetLastInputInfo, which kept resetting on browser / dashboard
+        # activity and pinned the displayed countdown at near-full
+        # threshold forever.
+        eta = self._compute_idle_recovery_eta()
+        if eta is None:
+            overlay.update("idle", "Idle")
             return
-
-        overlay.update("idle", "Idle")
+        if eta <= 0:
+            overlay.update("recovery", "Recovering...")
+            return
+        mins = eta // 60
+        secs = eta % 60
+        overlay.update("idle", f"Idle \u2022 opening log in {mins}m{secs:02d}s")
 
     _EOS_BASE_INTERVAL = 300       # 5 min normal
     _EOS_MAX_BACKOFF = 3600        # 1 hour max between retries
