@@ -977,6 +977,14 @@ class TribeWatchApp:
         if self._tribe_info is not None:
             from dataclasses import asdict as _asdict
             status["tribe_info"] = _asdict(self._tribe_info)
+        # True iff the tribe-window OCR has produced a recognised tribe
+        # this session. False means the client is connected and may even
+        # be registered to a tribe_id via its config, but has not yet
+        # confirmed via OCR that it's looking at the expected tribe.
+        # Drives a distinct dashboard subtitle so an operator can tell
+        # the difference between "actually idle" and "still trying to
+        # identify the tribe".
+        status["tribe_window_detected"] = self._tribe_info is not None
 
         # EOS server info (cached from last refresh)
         eos_info = getattr(self, "_eos_info", None)
