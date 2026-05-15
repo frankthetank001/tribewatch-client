@@ -26,6 +26,16 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+# Minimum sustained _active_play=True duration before we count a burst
+# as real ARK interaction (resets the AFK-from-ARK timer). Below this
+# threshold the burst is treated as a phantom - ARK's anti-AFK
+# heartbeat emits sub-10s bursts every ~50s on PvP servers to dodge
+# server-side AFK kicks. 10s leaves plenty of room for that pattern
+# while still catching any genuine play interaction (real player
+# sessions are minutes, not seconds).
+_ACTIVE_PLAY_BURST_MIN_SECS: float = 10.0
+
+
 async def _discover_tribe_name_async(config: TribeWatchConfig) -> str:
     """Async implementation of tribe name discovery via OCR."""
     if not config.tribe.bbox:
@@ -240,6 +250,29 @@ class TribeWatchApp:
         self._screen_still_since: float | None = None  # time.time() when screen became static
         self._screen_change_pct: float = 100.0  # last measured change % (0-100)
         self._active_play: bool = False  # True iff ARK foreground + recent input (OS gate)
+        # Timestamp of the last cycle where _active_play was True for
+        # long enough to count as real ARK interaction. Drives the
+        # "ARK-specific input idle" signal used by the idle-recovery
+        # countdown. Defaults to startup so a never-played session has
+        # a finite, monotonically-growing idle measurement from the
+        # start.
+        self._active_play_last_at: float = time.time()
+        # Start time of the current _active_play=True burst. Used to
+        # distinguish sustained player interaction from sub-10-second
+        # phantom bursts that PvP-game-side anti-AFK heartbeats emit
+        # every ~50s (verified pattern across multiple clients
+        # regardless of peripherals - the game itself synthesizes
+        # input to keep the server from kicking it). Phantom bursts
+        # short-circuit before crossing the threshold and never bump
+        # _active_play_last_at, so the AFK timer can actually
+        # accumulate when the player is genuinely away.
+        self._active_play_burst_start_at: float | None = None
+        # Has this session ever observed monitoring=True (log_header
+        # visible for >= 30s)? Gates the auto idle-recovery sequence
+        # so fresh launches that have never seen the tribe log don't
+        # press L into the main menu. Manual reconnect via the
+        # dashboard is unaffected.
+        self._ever_monitored: bool = False
         self._heartbeat_kick: asyncio.Event | None = None  # set to short-circuit heartbeat sleep
         self._idle_recovery_attempted: bool = False  # prevents repeated recovery attempts
         self._overlay = None  # StatusOverlay (set by __main__ if enabled)
@@ -800,6 +833,10 @@ class TribeWatchApp:
                 "refresh_settle_seconds": getattr(
                     self.config.tribe_log, "refresh_settle_seconds", 6.0,
                 ),
+                "active_play_burst_min_seconds": getattr(
+                    self.config.tribe_log, "active_play_burst_min_seconds",
+                    _ACTIVE_PLAY_BURST_MIN_SECS,
+                ),
             },
         }
 
@@ -811,25 +848,41 @@ class TribeWatchApp:
                 status["monitoring"] = (time.time() - visible_since) >= 30
             else:
                 status["monitoring"] = False
+            # Latch _ever_monitored once we've genuinely seen the tribe
+            # log. Gates auto idle-recovery so a fresh launch sitting on
+            # main menu doesn't press L into the menu - only clients
+            # that have known the log at least once will try to recover
+            # it via the L-key path. Manual reconnect from the dashboard
+            # is unaffected.
+            if status["monitoring"] and not self._ever_monitored:
+                self._ever_monitored = True
+                log.info(
+                    "First confirmed monitoring this session - auto idle-recovery armed",
+                )
 
-            # Once-per-minute diagnostic: log the exact monitoring /
-            # active_play values being reported to the server, plus the
-            # underlying state that drives them. Lets us correlate the
-            # dashboard's per-client tile (which uses these flags) with
-            # what the client thinks it's saying — without this,
-            # "client shows as idle on the website" is undebuggable
-            # from the client log alone.
-            _last_status_diag = getattr(self, "_status_diag_last", 0.0)
-            if now_mono - _last_status_diag >= 60.0:
-                self._status_diag_last = now_mono
+            # State-change diagnostic: log the monitoring / active_play /
+            # log_header_visible / paused tuple only when it actually
+            # changes from the last time we logged it. Lets us correlate
+            # the dashboard's per-client tile with what the client
+            # thinks it's saying, without spamming the log with a
+            # repeating once-per-minute snapshot when nothing has
+            # actually moved.
+            _diag_state = (
+                bool(status.get("monitoring")),
+                bool(getattr(self, "_active_play", False)),
+                bool(self._log_header_visible),
+                bool(self._paused),
+            )
+            if _diag_state != getattr(self, "_status_diag_last", None):
+                self._status_diag_last = _diag_state
                 log.info(
                     "status: monitoring=%s active_play=%s "
                     "(log_header_visible=%s, visible_for=%.1fs, paused=%s)",
-                    status.get("monitoring"),
-                    getattr(self, "_active_play", False),
-                    self._log_header_visible,
+                    _diag_state[0],
+                    _diag_state[1],
+                    _diag_state[2],
                     (time.time() - visible_since) if visible_since else 0.0,
-                    self._paused,
+                    _diag_state[3],
                 )
 
         # Parasaur sessions
@@ -945,6 +998,12 @@ class TribeWatchApp:
         status["screen_change_pct"] = getattr(self, "_screen_change_pct", 100.0)
         status["active_play"] = getattr(self, "_active_play", False)
         status["character_dead"] = getattr(self, "_character_dead", False)
+        # Canonical "time until idle-recovery fires" - computed by the
+        # same gating that _idle_screen_monitor uses, so the dashboard
+        # gets the same number the client itself would log. None when
+        # the countdown isn't running (log visible / playing / no AFK
+        # signal / recovery already triggered). 0 when about to fire.
+        status["idle_recovery_eta_secs"] = self._compute_idle_recovery_eta()
 
         # Component health
         status["components"] = {
@@ -958,6 +1017,14 @@ class TribeWatchApp:
         if self._tribe_info is not None:
             from dataclasses import asdict as _asdict
             status["tribe_info"] = _asdict(self._tribe_info)
+        # True iff the tribe-window OCR has produced a recognised tribe
+        # this session. False means the client is connected and may even
+        # be registered to a tribe_id via its config, but has not yet
+        # confirmed via OCR that it's looking at the expected tribe.
+        # Drives a distinct dashboard subtitle so an operator can tell
+        # the difference between "actually idle" and "still trying to
+        # identify the tribe".
+        status["tribe_window_detected"] = self._tribe_info is not None
 
         # EOS server info (cached from last refresh)
         eos_info = getattr(self, "_eos_info", None)
@@ -965,6 +1032,26 @@ class TribeWatchApp:
             status["eos_server_info"] = eos_info
 
         return status
+
+    # Friendly labels for reconnect stages surfaced in the overlay.
+    # Falls back to a Title-Cased stage name when an unmapped one
+    # arrives so the overlay always shows _something_ useful.
+    _RECONNECT_STAGE_LABELS = {
+        "closing_game": "Closing game",
+        "launching": "Launching",
+        "waiting_title": "Title screen",
+        "clicking_join": "Clicking JOIN",
+        "waiting_load": "Loading game",
+        "opening_tribe_log": "Opening tribe log",
+        "retrying": "Retrying",
+        "browser_start": "Server browser",
+        "dismissing_title": "Title screen",
+        "opening_browser": "Server browser",
+        "searching_server": "Finding server",
+        "clicking_join_browser": "Clicking JOIN",
+        "success": "Reconnected",
+        "failed": "Reconnect failed",
+    }
 
     def _update_overlay(self) -> None:
         """Update the overlay with current client status."""
@@ -980,6 +1067,19 @@ class TribeWatchApp:
             overlay.update("paused", "Paused")
             return
 
+        # Active reconnect takes precedence over everything below it.
+        # The reconnect sequence is moving through main menu / load
+        # screens / etc, and the idle-recovery countdown is irrelevant
+        # while that's running (recovery is literally what's happening).
+        seq = getattr(self, "_reconnect_seq", None)
+        if seq is not None and seq.running:
+            stage = seq.current_stage or ""
+            label = self._RECONNECT_STAGE_LABELS.get(
+                stage, stage.replace("_", " ").title() if stage else "Reconnecting",
+            )
+            overlay.update("reconnecting", f"Reconnecting \u2022 {label}")
+            return
+
         if not self.capture.window_found:
             overlay.update("offline", "No game window")
             return
@@ -992,27 +1092,24 @@ class TribeWatchApp:
             overlay.update("monitoring", "Monitoring")
             return
 
-        # AFK + log-not-visible — show idle/recovery countdown. Combine
-        # screen-stillness with system input-idle so animated screens
-        # (ARK main menu cinematic backdrop, loading screens) don't mask
-        # the user's true AFK state.
-        from tribewatch.capture import get_idle_time_ms
-        afk_secs = get_idle_time_ms() / 1000.0
-        still_since = self._screen_still_since
-        if still_since is not None:
-            afk_secs = max(afk_secs, time.time() - still_since)
-        if afk_secs > 0:
-            threshold = self.config.alerts.idle_alert_minutes * 60
-            remaining = threshold - afk_secs
-            if remaining > 0:
-                mins = int(remaining // 60)
-                secs = int(remaining % 60)
-                overlay.update("idle", f"Idle \u2022 opening log in {mins}m{secs:02d}s")
-            else:
-                overlay.update("recovery", "Recovering...")
+        # AFK + log-not-visible - show idle/recovery countdown.
+        # Route through the same _compute_idle_recovery_eta helper that
+        # produces the dashboard countdown so the in-game overlay and
+        # the web dashboard always agree on what the timer says.
+        # Previously this had its own copy using system-wide
+        # GetLastInputInfo, which kept resetting on browser / dashboard
+        # activity and pinned the displayed countdown at near-full
+        # threshold forever.
+        eta = self._compute_idle_recovery_eta()
+        if eta is None:
+            overlay.update("idle", "Idle")
             return
-
-        overlay.update("idle", "Idle")
+        if eta <= 0:
+            overlay.update("recovery", "Recovering...")
+            return
+        mins = eta // 60
+        secs = eta % 60
+        overlay.update("idle", f"Idle \u2022 opening log in {mins}m{secs:02d}s")
 
     _EOS_BASE_INTERVAL = 300       # 5 min normal
     _EOS_MAX_BACKOFF = 3600        # 1 hour max between retries
@@ -1333,6 +1430,53 @@ class TribeWatchApp:
                 break
             await self.refresh_tribe_log(manual=False)
 
+    def _compute_idle_recovery_eta(self) -> int | None:
+        """Seconds until _idle_screen_monitor would press L to reopen the log.
+
+        Single source of truth for the dashboard's "Idle - opening tribe
+        log in X" subtitle. Mirrors the gating in _idle_screen_monitor:
+
+          * Returns None when the countdown is not running - the log is
+            visible, the user is actively playing, the client is paused,
+            no AFK signal has accumulated, or recovery has already been
+            attempted this cycle.
+          * Returns a non-negative integer when counting down (0 means
+            "threshold reached, about to fire on the next monitor tick").
+
+        Computed inline on each status push rather than cached so the
+        value matches the same idle_duration the monitor would see at
+        the moment we report it - no 30s lag from the monitor's own
+        sleep cadence.
+        """
+        if getattr(self, "_log_header_visible", False):
+            return None
+        if getattr(self, "_active_play", False):
+            return None
+        if getattr(self, "_paused", False):
+            return None
+        if getattr(self, "_idle_recovery_attempted", False):
+            return None
+        # ARK-scoped input idle: how long since the user was actively
+        # interacting with the ARK window (foreground + input). Counts
+        # browsing the dashboard / Discord / other windows as "idle from
+        # ARK", because the recovery sequence will focus_window() ARK
+        # before pressing L anyway - there's no risk of an L landing in
+        # whatever non-ARK window the user happens to have foreground.
+        ark_input_idle_secs = time.time() - getattr(
+            self, "_active_play_last_at", time.time(),
+        )
+        still_since = getattr(self, "_screen_still_since", None)
+        screen_still_secs = (time.time() - still_since) if still_since else 0.0
+        idle_duration = max(screen_still_secs, ark_input_idle_secs)
+        if idle_duration <= 0:
+            return None
+        _tl_idle = getattr(self.config.tribe_log, "idle_recovery_minutes", 0.0) or 0.0
+        threshold_secs = (
+            _tl_idle or getattr(self.config.alerts, "idle_alert_minutes", 10)
+        ) * 60
+        remaining = threshold_secs - idle_duration
+        return max(0, int(remaining))
+
     async def _idle_screen_monitor(self) -> None:
         """Detect idle screen and attempt to reopen tribe log / auto-reconnect.
 
@@ -1357,18 +1501,22 @@ class TribeWatchApp:
             if self._paused or not self.capture.window_found:
                 continue
 
-            # AFK detection: combine screen-stillness with system input-idle.
-            # Either signals "user is AFK" - input-idle covers animated
-            # screens (ARK main menu cinematic backdrop, loading screens)
-            # where the screen-still detector cannot latch.
-            from tribewatch.capture import get_idle_time_ms
-            input_idle_secs = get_idle_time_ms() / 1000.0
+            # AFK detection: combine screen-stillness with ARK-scoped
+            # input idle. Either signals "user is AFK from ARK" - the
+            # ARK-scoped fallback covers animated screens (main menu
+            # cinematic backdrop, loading screens) where the
+            # screen-still detector cannot latch, while still treating
+            # the user as AFK when they're focused on another window
+            # (browser, dashboard, etc.). Recovery focuses ARK before
+            # pressing L so non-ARK focus is not a safety concern.
+            ark_input_idle_secs = time.time() - self._active_play_last_at
             screen_still_secs = (
                 (time.time() - self._screen_still_since)
                 if self._screen_still_since is not None
                 else 0.0
             )
-            idle_duration = max(screen_still_secs, input_idle_secs)
+            idle_duration = max(screen_still_secs, ark_input_idle_secs)
+            input_idle_secs = ark_input_idle_secs  # for the log line below
 
             # If tribe log is visible, user is actively playing, or no AFK
             # signal at all, reset everything.
@@ -1401,6 +1549,20 @@ class TribeWatchApp:
                 )
 
             if idle_duration < IDLE_THRESHOLD or self._idle_recovery_attempted:
+                continue
+
+            # Gate: never auto-press L unless this session has actually
+            # had monitoring=True at some point. Fresh launches sitting
+            # on the main menu (no log ever visible) shouldn't get a
+            # phantom L into the menu - manual reconnect from the
+            # dashboard is the right escape for that case.
+            if not self._ever_monitored:
+                if not self._idle_recovery_attempted:
+                    log.info(
+                        "Idle threshold reached but no monitoring this session yet - "
+                        "skipping auto-recovery (manual reconnect still available)",
+                    )
+                self._idle_recovery_attempted = True
                 continue
 
             # Check for death screen before attempting any recovery
@@ -1506,6 +1668,7 @@ class TribeWatchApp:
     async def _capture_cycle(self) -> None:
         """Single capture → OCR → parse → dedup → dispatch cycle."""
         if self._paused:
+            self._update_overlay()
             return
 
         # OS-signal active-play gate. If ARK is the foreground window and
@@ -1525,6 +1688,28 @@ class TribeWatchApp:
         )
         was_active = self._active_play
         if playing:
+            # Burst-debounce: only bump _active_play_last_at once the
+            # current True-burst has been sustained for at least
+            # active_play_burst_min_seconds. ARK's anti-AFK heartbeat
+            # synthesizes short (2-6s) input events every ~50s on PvP
+            # servers; without the debounce those phantoms keep
+            # resetting the AFK timer and the idle-recovery countdown
+            # never accumulates, even though no real player is at the
+            # keyboard. The capture-skip behavior (no OCR while playing)
+            # is unchanged - we still pause work for any brief burst -
+            # but the AFK timer only resets for sustained interaction.
+            now = time.time()
+            if not was_active:
+                self._active_play_burst_start_at = now
+            burst_start = self._active_play_burst_start_at or now
+            burst_min_secs = float(
+                getattr(
+                    self.config.tribe_log, "active_play_burst_min_seconds",
+                    _ACTIVE_PLAY_BURST_MIN_SECS,
+                ) or _ACTIVE_PLAY_BURST_MIN_SECS
+            )
+            if (now - burst_start) >= burst_min_secs:
+                self._active_play_last_at = now
             if not was_active:
                 self._active_play = True
                 log.info(
@@ -1557,6 +1742,7 @@ class TribeWatchApp:
             # one OCR peek to re-confirm whether the tribe log is still
             # visible, then drop into idle-skip mode if it isn't.
             self._active_play = False
+            self._active_play_burst_start_at = None
             self._needs_log_peek = True
             log.info("Resumed monitoring — ARK no longer foreground or input idle")
             self._kick_heartbeat()
@@ -1569,6 +1755,7 @@ class TribeWatchApp:
         # _idle_screen_monitor will press L and flip
         # _log_header_visible back to True, ending the skip.
         if not self._log_header_visible and not self._needs_log_peek:
+            self._update_overlay()
             return
 
         img = self.capture.grab()
@@ -1583,6 +1770,7 @@ class TribeWatchApp:
             # heartbeats and the dashboard continues to show "playing"
             # long after ARK has exited.
             self._active_play = False
+            self._active_play_burst_start_at = None
             self._screen_still_since = None
             if was_visible:
                 log.info("Tribe log lost — window not found")
@@ -1592,6 +1780,7 @@ class TribeWatchApp:
                 log.debug("Capture returned None, skipping cycle")
             if was_active:
                 self._kick_heartbeat()
+            self._update_overlay()
             return
 
         self._last_capture_at = time.time()
