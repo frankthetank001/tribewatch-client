@@ -26,6 +26,16 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+# Minimum sustained _active_play=True duration before we count a burst
+# as real ARK interaction (resets the AFK-from-ARK timer). Below this
+# threshold the burst is treated as a phantom - ARK's anti-AFK
+# heartbeat emits sub-10s bursts every ~50s on PvP servers to dodge
+# server-side AFK kicks. 10s leaves plenty of room for that pattern
+# while still catching any genuine play interaction (real player
+# sessions are minutes, not seconds).
+_ACTIVE_PLAY_BURST_MIN_SECS: float = 10.0
+
+
 async def _discover_tribe_name_async(config: TribeWatchConfig) -> str:
     """Async implementation of tribe name discovery via OCR."""
     if not config.tribe.bbox:
@@ -240,14 +250,29 @@ class TribeWatchApp:
         self._screen_still_since: float | None = None  # time.time() when screen became static
         self._screen_change_pct: float = 100.0  # last measured change % (0-100)
         self._active_play: bool = False  # True iff ARK foreground + recent input (OS gate)
-        # Timestamp of the last cycle where _active_play was True - i.e.
-        # the user was actually interacting with ARK (foreground + input).
-        # Drives the "ARK-specific input idle" signal used by the
-        # idle-recovery countdown, replacing system-wide GetLastInputInfo
-        # which counted browser/Discord/etc activity as ARK activity.
-        # Defaults to startup time so a never-played session has a
-        # finite, monotonically-growing idle measurement from the start.
+        # Timestamp of the last cycle where _active_play was True for
+        # long enough to count as real ARK interaction. Drives the
+        # "ARK-specific input idle" signal used by the idle-recovery
+        # countdown. Defaults to startup so a never-played session has
+        # a finite, monotonically-growing idle measurement from the
+        # start.
         self._active_play_last_at: float = time.time()
+        # Start time of the current _active_play=True burst. Used to
+        # distinguish sustained player interaction from sub-10-second
+        # phantom bursts that PvP-game-side anti-AFK heartbeats emit
+        # every ~50s (verified pattern across multiple clients
+        # regardless of peripherals - the game itself synthesizes
+        # input to keep the server from kicking it). Phantom bursts
+        # short-circuit before crossing the threshold and never bump
+        # _active_play_last_at, so the AFK timer can actually
+        # accumulate when the player is genuinely away.
+        self._active_play_burst_start_at: float | None = None
+        # Has this session ever observed monitoring=True (log_header
+        # visible for >= 30s)? Gates the auto idle-recovery sequence
+        # so fresh launches that have never seen the tribe log don't
+        # press L into the main menu. Manual reconnect via the
+        # dashboard is unaffected.
+        self._ever_monitored: bool = False
         self._heartbeat_kick: asyncio.Event | None = None  # set to short-circuit heartbeat sleep
         self._idle_recovery_attempted: bool = False  # prevents repeated recovery attempts
         self._overlay = None  # StatusOverlay (set by __main__ if enabled)
@@ -819,6 +844,17 @@ class TribeWatchApp:
                 status["monitoring"] = (time.time() - visible_since) >= 30
             else:
                 status["monitoring"] = False
+            # Latch _ever_monitored once we've genuinely seen the tribe
+            # log. Gates auto idle-recovery so a fresh launch sitting on
+            # main menu doesn't press L into the menu - only clients
+            # that have known the log at least once will try to recover
+            # it via the L-key path. Manual reconnect from the dashboard
+            # is unaffected.
+            if status["monitoring"] and not self._ever_monitored:
+                self._ever_monitored = True
+                log.info(
+                    "First confirmed monitoring this session - auto idle-recovery armed",
+                )
 
             # State-change diagnostic: log the monitoring / active_play /
             # log_header_visible / paused tuple only when it actually
@@ -1478,6 +1514,20 @@ class TribeWatchApp:
             if idle_duration < IDLE_THRESHOLD or self._idle_recovery_attempted:
                 continue
 
+            # Gate: never auto-press L unless this session has actually
+            # had monitoring=True at some point. Fresh launches sitting
+            # on the main menu (no log ever visible) shouldn't get a
+            # phantom L into the menu - manual reconnect from the
+            # dashboard is the right escape for that case.
+            if not self._ever_monitored:
+                if not self._idle_recovery_attempted:
+                    log.info(
+                        "Idle threshold reached but no monitoring this session yet - "
+                        "skipping auto-recovery (manual reconnect still available)",
+                    )
+                self._idle_recovery_attempted = True
+                continue
+
             # Check for death screen before attempting any recovery
             if await self._is_death_screen():
                 self._handle_character_death()
@@ -1600,11 +1650,22 @@ class TribeWatchApp:
         )
         was_active = self._active_play
         if playing:
-            # Bump the ARK-input-idle reference every cycle the user is
-            # actually interacting with ARK, not just on transitions.
-            # The idle-recovery countdown subtracts from this to decide
-            # when the user has been "AFK from ARK" long enough.
-            self._active_play_last_at = time.time()
+            # Burst-debounce: only bump _active_play_last_at once the
+            # current True-burst has been sustained for at least
+            # _ACTIVE_PLAY_BURST_MIN_SECS. ARK's anti-AFK heartbeat
+            # synthesizes short (2-6s) input events every ~50s on PvP
+            # servers; without the debounce those phantoms keep
+            # resetting the AFK timer and the idle-recovery countdown
+            # never accumulates, even though no real player is at the
+            # keyboard. The capture-skip behavior (no OCR while playing)
+            # is unchanged - we still pause work for any brief burst -
+            # but the AFK timer only resets for sustained interaction.
+            now = time.time()
+            if not was_active:
+                self._active_play_burst_start_at = now
+            burst_start = self._active_play_burst_start_at or now
+            if (now - burst_start) >= _ACTIVE_PLAY_BURST_MIN_SECS:
+                self._active_play_last_at = now
             if not was_active:
                 self._active_play = True
                 log.info(
@@ -1637,6 +1698,7 @@ class TribeWatchApp:
             # one OCR peek to re-confirm whether the tribe log is still
             # visible, then drop into idle-skip mode if it isn't.
             self._active_play = False
+            self._active_play_burst_start_at = None
             self._needs_log_peek = True
             log.info("Resumed monitoring — ARK no longer foreground or input idle")
             self._kick_heartbeat()
@@ -1663,6 +1725,7 @@ class TribeWatchApp:
             # heartbeats and the dashboard continues to show "playing"
             # long after ARK has exited.
             self._active_play = False
+            self._active_play_burst_start_at = None
             self._screen_still_since = None
             if was_visible:
                 log.info("Tribe log lost — window not found")
