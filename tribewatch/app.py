@@ -1635,6 +1635,7 @@ class TribeWatchApp:
     async def _capture_cycle(self) -> None:
         """Single capture → OCR → parse → dedup → dispatch cycle."""
         if self._paused:
+            self._update_overlay()
             return
 
         # OS-signal active-play gate. If ARK is the foreground window and
@@ -1721,6 +1722,7 @@ class TribeWatchApp:
         # _idle_screen_monitor will press L and flip
         # _log_header_visible back to True, ending the skip.
         if not self._log_header_visible and not self._needs_log_peek:
+            self._update_overlay()
             return
 
         img = self.capture.grab()
@@ -1745,6 +1747,7 @@ class TribeWatchApp:
                 log.debug("Capture returned None, skipping cycle")
             if was_active:
                 self._kick_heartbeat()
+            self._update_overlay()
             return
 
         self._last_capture_at = time.time()
