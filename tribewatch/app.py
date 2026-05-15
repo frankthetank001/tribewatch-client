@@ -1033,6 +1033,26 @@ class TribeWatchApp:
 
         return status
 
+    # Friendly labels for reconnect stages surfaced in the overlay.
+    # Falls back to a Title-Cased stage name when an unmapped one
+    # arrives so the overlay always shows _something_ useful.
+    _RECONNECT_STAGE_LABELS = {
+        "closing_game": "Closing game",
+        "launching": "Launching",
+        "waiting_title": "Title screen",
+        "clicking_join": "Clicking JOIN",
+        "waiting_load": "Loading game",
+        "opening_tribe_log": "Opening tribe log",
+        "retrying": "Retrying",
+        "browser_start": "Server browser",
+        "dismissing_title": "Title screen",
+        "opening_browser": "Server browser",
+        "searching_server": "Finding server",
+        "clicking_join_browser": "Clicking JOIN",
+        "success": "Reconnected",
+        "failed": "Reconnect failed",
+    }
+
     def _update_overlay(self) -> None:
         """Update the overlay with current client status."""
         overlay = getattr(self, "_overlay", None)
@@ -1045,6 +1065,19 @@ class TribeWatchApp:
 
         if self._paused:
             overlay.update("paused", "Paused")
+            return
+
+        # Active reconnect takes precedence over everything below it.
+        # The reconnect sequence is moving through main menu / load
+        # screens / etc, and the idle-recovery countdown is irrelevant
+        # while that's running (recovery is literally what's happening).
+        seq = getattr(self, "_reconnect_seq", None)
+        if seq is not None and seq.running:
+            stage = seq.current_stage or ""
+            label = self._RECONNECT_STAGE_LABELS.get(
+                stage, stage.replace("_", " ").title() if stage else "Reconnecting",
+            )
+            overlay.update("reconnecting", f"Reconnecting \u2022 {label}")
             return
 
         if not self.capture.window_found:

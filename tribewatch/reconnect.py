@@ -129,6 +129,11 @@ class ReconnectSequence:
     def death_detected(self) -> bool:
         return self._death_detected
 
+    @property
+    def current_stage(self) -> str:
+        """Most recent stage reported via :meth:`_report`, or "" when idle."""
+        return getattr(self, "_current_stage", "")
+
     def start(self) -> asyncio.Task:
         """Start the reconnect sequence as a background task."""
         if self.running:
@@ -175,6 +180,9 @@ class ReconnectSequence:
     async def _report(self, stage: str, message: str) -> None:
         """Report reconnect progress to the server, with a screenshot."""
         log.info("Reconnect [%s]: %s", stage, message)
+        # Track the latest stage so the in-game overlay can surface it
+        # in place of the idle countdown while a reconnect is in flight.
+        self._current_stage = stage
         if stage == "failed":
             self._failure_reason = message
         image = self._capture_screenshot_b64()
