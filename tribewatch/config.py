@@ -44,6 +44,14 @@ class TribeLogConfig:
     # refresh escalates to auto-reconnect. Bump it on slow machines
     # where the fade-out takes longer than the default.
     refresh_settle_seconds: float = 6.0
+    # Minimum sustained _active_play=True duration before a burst
+    # counts as real ARK interaction and resets the AFK-from-ARK timer.
+    # Sub-threshold bursts are treated as phantom inputs (ARK's
+    # anti-AFK heartbeat synthesizes 2-6s bursts every ~50s on PvP
+    # servers, which would otherwise prevent idle-recovery from
+    # accumulating). 10s leaves plenty of margin above the observed
+    # phantom pattern while still catching any genuine play.
+    active_play_burst_min_seconds: float = 10.0
 
 
 @dataclass

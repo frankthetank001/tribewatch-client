@@ -833,6 +833,10 @@ class TribeWatchApp:
                 "refresh_settle_seconds": getattr(
                     self.config.tribe_log, "refresh_settle_seconds", 6.0,
                 ),
+                "active_play_burst_min_seconds": getattr(
+                    self.config.tribe_log, "active_play_burst_min_seconds",
+                    _ACTIVE_PLAY_BURST_MIN_SECS,
+                ),
             },
         }
 
@@ -1652,7 +1656,7 @@ class TribeWatchApp:
         if playing:
             # Burst-debounce: only bump _active_play_last_at once the
             # current True-burst has been sustained for at least
-            # _ACTIVE_PLAY_BURST_MIN_SECS. ARK's anti-AFK heartbeat
+            # active_play_burst_min_seconds. ARK's anti-AFK heartbeat
             # synthesizes short (2-6s) input events every ~50s on PvP
             # servers; without the debounce those phantoms keep
             # resetting the AFK timer and the idle-recovery countdown
@@ -1664,7 +1668,13 @@ class TribeWatchApp:
             if not was_active:
                 self._active_play_burst_start_at = now
             burst_start = self._active_play_burst_start_at or now
-            if (now - burst_start) >= _ACTIVE_PLAY_BURST_MIN_SECS:
+            burst_min_secs = float(
+                getattr(
+                    self.config.tribe_log, "active_play_burst_min_seconds",
+                    _ACTIVE_PLAY_BURST_MIN_SECS,
+                ) or _ACTIVE_PLAY_BURST_MIN_SECS
+            )
+            if (now - burst_start) >= burst_min_secs:
                 self._active_play_last_at = now
             if not was_active:
                 self._active_play = True
