@@ -577,8 +577,13 @@ def _apply_resolution_preset(cfg: object) -> bool:
         return True
 
 
-def _check_for_updates(*, cfg: Any = None, auto_accept: bool = False) -> None:
+async def _check_for_updates(*, cfg: Any = None, auto_accept: bool = False) -> None:
     """Check GitHub for a newer release and prompt to update (frozen builds only).
+
+    Async so it can be awaited from inside a running event loop (the
+    relay's _on_control update_now handler) without nested-asyncio.run
+    crashes. Startup callers wrap the call in ``asyncio.run`` because
+    they fire before any loop is running.
 
     ``auto_accept`` skips the Y/n consent prompt and installs immediately.
     Set when:
@@ -590,15 +595,13 @@ def _check_for_updates(*, cfg: Any = None, auto_accept: bool = False) -> None:
     Defaults to False so the on-startup check keeps prompting users
     who haven't explicitly enabled auto-update.
     """
-    import asyncio as _asyncio
-
     from tribewatch.updater import check_for_update, download_and_run_installer
 
     log = logging.getLogger(__name__)
     log.info("Checking for updates...")
 
     try:
-        update = _asyncio.run(check_for_update())
+        update = await check_for_update()
     except Exception:
         log.warning("Update check failed with exception", exc_info=True)
         return
@@ -643,7 +646,7 @@ def _check_for_updates(*, cfg: Any = None, auto_accept: bool = False) -> None:
         if answer in ("", "y", "yes"):
             print("  Downloading update...")
             try:
-                ok = _asyncio.run(download_and_run_installer(update["download_url"]))
+                ok = await download_and_run_installer(update["download_url"])
             except Exception:
                 ok = False
             if ok:
@@ -687,7 +690,7 @@ def _cmd_run(config_path: Path, *, skip_unverified_setup: bool = False) -> None:
     # --- Auto-update check (frozen/installed builds only) ---
     from tribewatch.updater import is_frozen
     if is_frozen():
-        _check_for_updates(cfg=cfg)
+        asyncio.run(_check_for_updates(cfg=cfg))
 
     ok = _apply_resolution_preset(cfg)
     if not ok and not skip_unverified_setup:
@@ -1485,13 +1488,19 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             # Dashboard-initiated update. The operator clicked the
             # outdated-version pill on the tile and confirmed the
             # modal - that's the consent moment, so we skip the
-            # Y/n prompt and install whatever the latest stable
-            # GitHub release is.
+            # Y/n prompt and install whatever the matching release
+            # (stable or dev-latest) is.
             log = logging.getLogger(__name__)
             log.warning("Update requested via remote control - installing latest release")
             from tribewatch.updater import is_frozen
             if is_frozen():
-                _check_for_updates(cfg=app.config, auto_accept=True)
+                # We're inside the relay's running event loop here.
+                # Schedule the async update check as a task rather
+                # than calling asyncio.run() (which would crash with
+                # "cannot be called from a running event loop").
+                asyncio.create_task(
+                    _check_for_updates(cfg=app.config, auto_accept=True),
+                )
             else:
                 log.info("update_now: not a frozen build, ignoring (dev runs update via pip)")
         elif command == "restart":
