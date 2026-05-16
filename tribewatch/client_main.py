@@ -191,7 +191,7 @@ def main() -> None:
 
     # Auto-update check (frozen builds only)
     if is_frozen():
-        _check_for_updates()
+        _check_for_updates(cfg=cfg)
 
     ok = _apply_resolution_preset(cfg)
     if not ok and not args.setup:

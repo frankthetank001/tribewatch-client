@@ -1025,6 +1025,12 @@ class TribeWatchApp:
         # the difference between "actually idle" and "still trying to
         # identify the tribe".
         status["tribe_window_detected"] = self._tribe_info is not None
+        # Surface the auto-update opt-in so the dashboard tile can
+        # default the modal's "Enable auto-update" checkbox to the
+        # client's current state.
+        status["auto_update"] = bool(
+            getattr(self.config.general, "auto_update", False),
+        )
 
         # EOS server info (cached from last refresh)
         eos_info = getattr(self, "_eos_info", None)

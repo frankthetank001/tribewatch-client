@@ -577,8 +577,19 @@ def _apply_resolution_preset(cfg: object) -> bool:
         return True
 
 
-def _check_for_updates() -> None:
-    """Check GitHub for a newer release and prompt to update (frozen builds only)."""
+def _check_for_updates(*, cfg: Any = None, auto_accept: bool = False) -> None:
+    """Check GitHub for a newer release and prompt to update (frozen builds only).
+
+    ``auto_accept`` skips the Y/n consent prompt and installs immediately.
+    Set when:
+      * the operator clicked "Update now" on the dashboard tile - the
+        click itself is the consent moment, and we want hands-off
+        installation of whatever version they confirmed in the modal.
+      * ``cfg.general.auto_update`` is True - the operator opted into
+        hands-off updates for this client via the dashboard.
+    Defaults to False so the on-startup check keeps prompting users
+    who haven't explicitly enabled auto-update.
+    """
     import asyncio as _asyncio
 
     from tribewatch.updater import check_for_update, download_and_run_installer
@@ -606,21 +617,29 @@ def _check_for_updates() -> None:
             print("    ...")
 
     if update["is_installer"]:
-        # Ask for explicit consent. Auto-update without a prompt is a
-        # supply-chain attack surface - one consent moment per update
-        # gives the user a chance to notice an unexpected version or
-        # release notes before installing. On a windowed/no-console
-        # build there's no stdin to read from, so we fall back to
-        # auto-accept (the alternative is a hung process).
-        has_console = sys.stdin is not None and sys.stdin.isatty()
-        if has_console:
-            try:
-                answer = input("\n  Download and install update now? [Y/n] ").strip().lower()
-            except EOFError:
-                answer = "y"
-        else:
-            log.info("No console attached - auto-accepting update prompt")
+        # Per-client auto_update opt-in takes the place of the prompt
+        # for operators who've chosen hands-off updates. Otherwise we
+        # ask for explicit consent: auto-update without a prompt is a
+        # supply-chain attack surface, and one consent moment per
+        # update gives users a chance to notice an unexpected version
+        # or release notes before installing.
+        cfg_auto = bool(getattr(getattr(cfg, "general", None), "auto_update", False))
+        if auto_accept or cfg_auto:
+            log.info(
+                "Auto-accepting update prompt (%s)",
+                "dashboard-initiated" if auto_accept else "auto_update=True",
+            )
             answer = "y"
+        else:
+            has_console = sys.stdin is not None and sys.stdin.isatty()
+            if has_console:
+                try:
+                    answer = input("\n  Download and install update now? [Y/n] ").strip().lower()
+                except EOFError:
+                    answer = "y"
+            else:
+                log.info("No console attached - auto-accepting update prompt")
+                answer = "y"
         if answer in ("", "y", "yes"):
             print("  Downloading update...")
             try:
@@ -668,7 +687,7 @@ def _cmd_run(config_path: Path, *, skip_unverified_setup: bool = False) -> None:
     # --- Auto-update check (frozen/installed builds only) ---
     from tribewatch.updater import is_frozen
     if is_frozen():
-        _check_for_updates()
+        _check_for_updates(cfg=cfg)
 
     ok = _apply_resolution_preset(cfg)
     if not ok and not skip_unverified_setup:
@@ -1462,6 +1481,19 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
             asyncio.create_task(_handle_log_dump(msg_id))
         elif command == "stream_logs":
             _toggle_log_stream()
+        elif command == "update_now":
+            # Dashboard-initiated update. The operator clicked the
+            # outdated-version pill on the tile and confirmed the
+            # modal - that's the consent moment, so we skip the
+            # Y/n prompt and install whatever the latest stable
+            # GitHub release is.
+            log = logging.getLogger(__name__)
+            log.warning("Update requested via remote control - installing latest release")
+            from tribewatch.updater import is_frozen
+            if is_frozen():
+                _check_for_updates(cfg=app.config, auto_accept=True)
+            else:
+                log.info("update_now: not a frozen build, ignoring (dev runs update via pip)")
         elif command == "restart":
             # In-process soft restart — flag the run loop and stop the
             # current app. The wrapping `while _restart_requested[...]`
