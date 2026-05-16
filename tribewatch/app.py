@@ -1025,6 +1025,12 @@ class TribeWatchApp:
         # the difference between "actually idle" and "still trying to
         # identify the tribe".
         status["tribe_window_detected"] = self._tribe_info is not None
+        # Surface the auto-update opt-in so the dashboard tile can
+        # default the modal's "Enable auto-update" checkbox to the
+        # client's current state.
+        status["auto_update"] = bool(
+            getattr(self.config.general, "auto_update", False),
+        )
 
         # EOS server info (cached from last refresh)
         eos_info = getattr(self, "_eos_info", None)
@@ -1908,6 +1914,15 @@ class TribeWatchApp:
         if log_header_visible and not was_visible:
             log.info("Tribe log detected — monitoring active")
             self._log_visible_since = time.time()
+            # Reset the screen-stillness baseline whenever the log
+            # reappears. Without this, a multi-hour AFK period that
+            # accumulated _screen_still_since to "9 hours ago" would
+            # persist after a successful reconnect - the next idle
+            # monitor tick would see idle_duration still over threshold
+            # and fire another recovery immediately, looping forever.
+            # Verified the hard way on a client that auto-reconnected
+            # every minute after a 9.5h AFK session ended.
+            self._screen_still_since = None
             if self._character_dead:
                 log.info("Character death state cleared — tribe log visible again")
                 self._character_dead = False

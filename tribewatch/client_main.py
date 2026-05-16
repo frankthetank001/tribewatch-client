@@ -191,7 +191,8 @@ def main() -> None:
 
     # Auto-update check (frozen builds only)
     if is_frozen():
-        _check_for_updates()
+        import asyncio as _asyncio_startup
+        _asyncio_startup.run(_check_for_updates(cfg=cfg))
 
     ok = _apply_resolution_preset(cfg)
     if not ok and not args.setup:

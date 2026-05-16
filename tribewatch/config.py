@@ -115,6 +115,12 @@ class GeneralConfig:
     window_title: str = "ArkAscended"  # window capture by title; empty = full screen capture
     calibration_resolution: list[int] = field(default_factory=list)  # [w, h] of the window at calibration time
     calibration_render_resolution: list[int] = field(default_factory=list)  # [w, h] of the game render at calibration time (UE's ResolutionSizeX/Y)
+    # Auto-accept new versions on startup without the Y/n consent
+    # prompt. Off by default (each update is an opt-in consent
+    # moment, a tiny but real defence against an unexpected release
+    # slipping in). Operators can flip this from the dashboard when
+    # they want hands-off rollouts.
+    auto_update: bool = False
 
 
 @dataclass
@@ -484,7 +490,7 @@ def _config_to_dict(cfg: TribeWatchConfig) -> dict[str, Any]:
 
 # Which top-level sections and general fields belong to each mode.
 _CLIENT_SECTIONS = {"server", "tribe_log", "general", "parasaur", "tribe", "reconnect"}
-_CLIENT_GENERAL_FIELDS = {"log_level", "state_file", "monitor", "window_title", "calibration_resolution", "calibration_render_resolution"}
+_CLIENT_GENERAL_FIELDS = {"log_level", "state_file", "monitor", "window_title", "calibration_resolution", "calibration_render_resolution", "auto_update"}
 _CLIENT_PARASAUR_FIELDS = {"bbox", "interval", "clear_delay", "grace_period", "ocr_engine", "parasaurs"}
 _CLIENT_SERVER_FIELDS = {"server_url", "client_token"}  # mode is a CLI flag, auth_token is server-side
 _SERVER_SECTIONS = {"server", "discord", "alerts", "general", "web", "generator", "presence", "todo_summary", "discord_notifications"}
