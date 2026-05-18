@@ -1612,7 +1612,7 @@ class TribeWatchApp:
                 await asyncio.sleep(settle)
 
             check_wait = max(getattr(self.config.tribe_log, "interval", 3) * 2, 6)
-            _L_ATTEMPTS = 3
+            _MAX_L_PRESSES = 2
             _POLL_INTERVAL = 1.0
             poll_budget = max(check_wait * 2, 12.0)
             recovered = False
@@ -1627,14 +1627,29 @@ class TribeWatchApp:
             # restart attempts. Input cancels the COUNTDOWN (handled
             # by the outer-loop gate at the top of this function), not
             # the sequence itself.
-            for attempt in range(1, _L_ATTEMPTS + 1):
+            #
+            # L is a toggle in ARK - pressing it again on a freshly-
+            # opened log would just close it again. So we press once,
+            # poll inline OCR for up to poll_budget seconds, and only
+            # re-press L if a pause menu is detected (genuine missed
+            # keystroke - the previous L hit the menu and didn't reach
+            # the game). The refresh-loop learned this lesson months
+            # ago; the idle-recovery path was still doing the old
+            # 3-unconditional-press pattern, which on slow log-open
+            # animations would close the log on press 2 and end up
+            # bailing to a full reconnect.
+            for press in range(1, _MAX_L_PRESSES + 1):
                 # Dismiss esc menu if open before pressing L
                 if await self._is_esc_menu_open():
-                    log.info("Idle recovery: pause menu detected, dismissing before L (attempt %d/%d)", attempt, _L_ATTEMPTS)
+                    log.info("Idle recovery: pause menu detected, dismissing before L (press %d/%d)", press, _MAX_L_PRESSES)
                     send_key(window_title, "escape")
                     await asyncio.sleep(2)
 
-                log.info("Idle recovery: pressing L to reopen tribe log (attempt %d/%d)", attempt, _L_ATTEMPTS)
+                log.info(
+                    "Idle recovery: pressing L to reopen tribe log "
+                    "(press %d/%d, polling up to %.0fs)",
+                    press, _MAX_L_PRESSES, poll_budget,
+                )
                 send_key(window_title, "l")
                 # Tiny initial settle so the very first poll doesn't
                 # OCR a frame mid-fade-in.
@@ -1650,8 +1665,8 @@ class TribeWatchApp:
                         elapsed = poll_budget - (deadline - time.monotonic())
                         log.info(
                             "Idle recovery: tribe log reopened "
-                            "(attempt %d/%d, after %.1fs)",
-                            attempt, _L_ATTEMPTS, elapsed,
+                            "(press %d/%d, after %.1fs)",
+                            press, _MAX_L_PRESSES, elapsed,
                         )
                         detected = True
                         break
@@ -1659,6 +1674,18 @@ class TribeWatchApp:
                 if detected:
                     self._screen_still_since = None
                     recovered = True
+                    break
+                # Budget expired - only re-press L if a pause menu
+                # caught the previous keystroke. Otherwise another L
+                # would toggle the log closed mid-animation.
+                if press < _MAX_L_PRESSES and await self._is_esc_menu_open():
+                    log.info(
+                        "Idle recovery: pause menu detected after L poll, "
+                        "dismissing and retrying L",
+                    )
+                    send_key(window_title, "escape")
+                    await asyncio.sleep(1.0)
+                else:
                     break
 
             if recovered:
@@ -1668,7 +1695,7 @@ class TribeWatchApp:
             if await self._is_death_screen():
                 self._handle_character_death()
                 continue
-            log.warning("Recovery failed after %d L attempts - triggering auto-reconnect", _L_ATTEMPTS)
+            log.warning("Recovery failed after %d L press(es) - triggering auto-reconnect", press)
             self._maybe_auto_reconnect("idle_recovery_failed")
 
     async def _capture_cycle(self) -> None:
