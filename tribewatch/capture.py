@@ -342,24 +342,19 @@ def get_window_client_size(hwnd: int) -> tuple[int, int] | None:
         return None
 
 
-def _grab_window(
-    hwnd: int,
-    bbox: list[int] | None = None,
-    fallback_size: tuple[int, int] | None = None,
-) -> Image.Image | None:
+def _grab_window(hwnd: int, bbox: list[int] | None = None) -> Image.Image | None:
     """Capture a window's client area via PrintWindow.
 
     Returns ``None`` when the window is minimized. ARK (UE5) stops pumping
-    frames into its swapchain while iconic, so PrintWindow can't draw it
-    even with PW_RENDERFULLCONTENT - it just returns 0. Skip the call
-    entirely so the caller can pause monitoring instead of churning on
-    failed grabs.
+    frames into its swapchain while iconic - verified via OBS Window
+    Capture, which freezes the moment the window minimizes - so neither
+    PrintWindow nor WinRT Graphics Capture can produce useful frames.
+    Skip the call entirely so the caller can pause monitoring instead of
+    churning on failed grabs.
 
     Args:
         hwnd: Window handle.
         bbox: Optional [left, top, right, bottom] crop region relative to client area.
-        fallback_size: Unused. Kept for ABI stability with callers that still
-            pass last-known client size.
 
     Returns:
         PIL Image, or None on failure / minimized window.
@@ -566,7 +561,7 @@ class ScreenCapture:
         size = get_window_client_size(self._hwnd)
         if size:
             self.last_window_size = size
-        return _grab_window(self._hwnd, self.bbox, fallback_size=self.last_window_size)
+        return _grab_window(self._hwnd, self.bbox)
 
     # -- Screen capture paths -------------------------------------------------
 
