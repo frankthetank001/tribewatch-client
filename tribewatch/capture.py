@@ -345,18 +345,28 @@ def get_window_client_size(hwnd: int) -> tuple[int, int] | None:
 def _grab_window(hwnd: int, bbox: list[int] | None = None) -> Image.Image | None:
     """Capture a window's client area via PrintWindow.
 
+    Returns ``None`` when the window is minimized. ARK (UE5) stops pumping
+    frames into its swapchain while iconic - verified via OBS Window
+    Capture, which freezes the moment the window minimizes - so neither
+    PrintWindow nor WinRT Graphics Capture can produce useful frames.
+    Skip the call entirely so the caller can pause monitoring instead of
+    churning on failed grabs.
+
     Args:
         hwnd: Window handle.
         bbox: Optional [left, top, right, bottom] crop region relative to client area.
 
     Returns:
-        PIL Image or None on failure.
+        PIL Image, or None on failure / minimized window.
     """
     if not _IS_WIN32:
         return None
 
     user32 = ctypes.windll.user32  # type: ignore[attr-defined]
     gdi32 = ctypes.windll.gdi32  # type: ignore[attr-defined]
+
+    if user32.IsIconic(hwnd):
+        return None
 
     # 1. Get client area dimensions
     rect = (ctypes.c_long * 4)()
@@ -472,6 +482,9 @@ class ScreenCapture:
         # GameUserSettings.ini for resolution-change detection because it
         # reflects the actual rendered pixel size.
         self.last_window_size: tuple[int, int] | None = None
+        # Iconic-state latch so we log "minimized" / "restored" once per
+        # transition instead of every cycle.
+        self._iconic: bool = False
 
         # Window capture mode
         if window_title:
@@ -534,6 +547,16 @@ class ScreenCapture:
                 log.warning("Window '%s' not found", self._window_title)
                 return None
             log.info("Window re-found: hwnd=%s", self._hwnd)
+
+        iconic = bool(user32.IsIconic(self._hwnd))
+        if iconic != self._iconic:
+            self._iconic = iconic
+            if iconic:
+                log.info("Window '%s' minimized - capture paused", self._window_title)
+            else:
+                log.info("Window '%s' restored - capture resumed", self._window_title)
+        if iconic:
+            return None
 
         size = get_window_client_size(self._hwnd)
         if size:
