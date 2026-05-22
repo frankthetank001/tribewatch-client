@@ -86,6 +86,48 @@ def discover_tribe_name(config: TribeWatchConfig) -> str:
     return asyncio.run(_discover_tribe_name_async(config))
 
 
+# Level extractor for dino_starved/dino_killed pairing — see
+# ``flag_starve_paired_kills``. The parser already normalizes "LVL" → "Lvl"
+# and merges split-digit OCR artifacts, so a plain ``Lvl <digits>`` match
+# against ``raw_text`` is reliable inside the same OCR pass.
+_LVL_FROM_RAW_RE = re.compile(r"Lvl\s*(\d+)")
+
+
+def flag_starve_paired_kills(events: list[TribeLogEvent]) -> set[int]:
+    """Return indices of ``events`` that are ``dino_killed`` followups to a
+    ``dino_starved`` in the same OCR pass.
+
+    Pair matching uses ``(day, time)`` first; when that misses (the parser
+    falls back to ``time="00:00:00"`` whenever OCR garbled the time prefix
+    on one of the two lines), it falls back to matching ``(day, level)``.
+    ARK guarantees the paired lines share the same dino + level, and the
+    parser normalizes level text, so level is a robust same-batch key.
+    Returns the set of event indices, not booleans on the events themselves
+    (they're frozen dataclasses).
+    """
+    starved_keys: set[tuple[int, str]] = set()
+    starved_levels_by_day: dict[int, set[int]] = {}
+    for e in events:
+        if e.event_type != EventType.DINO_STARVED:
+            continue
+        starved_keys.add((e.day, e.time))
+        m = _LVL_FROM_RAW_RE.search(e.raw_text)
+        if m:
+            starved_levels_by_day.setdefault(e.day, set()).add(int(m.group(1)))
+
+    paired: set[int] = set()
+    for i, e in enumerate(events):
+        if e.event_type != EventType.DINO_KILLED:
+            continue
+        if (e.day, e.time) in starved_keys:
+            paired.add(i)
+            continue
+        m = _LVL_FROM_RAW_RE.search(e.raw_text)
+        if m and int(m.group(1)) in starved_levels_by_day.get(e.day, ()):
+            paired.add(i)
+    return paired
+
+
 _DEFAULT_ACTIONS: dict[str, str] = {
     "dino_killed": "critical",
     "structure_destroyed": "critical",
@@ -1979,6 +2021,16 @@ class TribeWatchApp:
         if not events:
             return
 
+        # Tag dino_killed events that are starve followups so the server
+        # suppresses their Discord alert. Matching is by (day, time) with
+        # a (day, level) fallback to survive OCR mangling of the time
+        # prefix on one of the two paired lines. Computed BEFORE the
+        # action filter / dedup so the pairing survives even when the
+        # starved event itself is filtered out or already-seen.
+        paired_ids: set[int] = {
+            id(events[i]) for i in flag_starve_paired_kills(events)
+        }
+
         # Use resolve_event_action to filter ignored events
         pre_filter = len(events)
         events = [e for e in events if resolve_event_action(e, self.config)[0] != "ignore"]
@@ -2008,8 +2060,9 @@ class TribeWatchApp:
             return
 
         log.info("Dispatching %d new events", len(new_events))
-        event_dicts = [
-            {
+
+        def _to_dict(e: TribeLogEvent) -> dict:
+            d: dict = {
                 "day": e.day,
                 "time": e.time,
                 "raw_text": e.raw_text,
@@ -2020,8 +2073,11 @@ class TribeWatchApp:
                 "ping_detail": None,
                 "tribe_name": _tribe_name,
             }
-            for e in new_events
-        ]
+            if id(e) in paired_ids:
+                d["starve_paired"] = True
+            return d
+
+        event_dicts = [_to_dict(e) for e in new_events]
 
         # Store events (local SQLite or relay to server)
         ids = await self._store_events(event_dicts)
