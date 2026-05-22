@@ -342,12 +342,21 @@ def get_window_client_size(hwnd: int) -> tuple[int, int] | None:
         return None
 
 
-def _grab_window(hwnd: int, bbox: list[int] | None = None) -> Image.Image | None:
+def _grab_window(
+    hwnd: int,
+    bbox: list[int] | None = None,
+    fallback_size: tuple[int, int] | None = None,
+) -> Image.Image | None:
     """Capture a window's client area via PrintWindow.
 
     Args:
         hwnd: Window handle.
         bbox: Optional [left, top, right, bottom] crop region relative to client area.
+        fallback_size: Last-known ``(width, height)`` of the client area, used
+            when the window is minimized. ``GetClientRect`` returns 0x0 for
+            iconic windows, but PrintWindow can still draw via DWM's cached
+            surface as long as we feed real dimensions - so OCR keeps working
+            while the user is alt-tabbed with ARK minimized.
 
     Returns:
         PIL Image or None on failure.
@@ -364,8 +373,11 @@ def _grab_window(hwnd: int, bbox: list[int] | None = None) -> Image.Image | None
     width = rect[2]
     height = rect[3]
     if width <= 0 or height <= 0:
-        log.warning("Window client area is empty (%dx%d)", width, height)
-        return None
+        if user32.IsIconic(hwnd) and fallback_size is not None:
+            width, height = fallback_size
+        else:
+            log.warning("Window client area is empty (%dx%d)", width, height)
+            return None
 
     # 2. Get device context
     hdc = user32.GetDC(hwnd)
@@ -538,7 +550,7 @@ class ScreenCapture:
         size = get_window_client_size(self._hwnd)
         if size:
             self.last_window_size = size
-        return _grab_window(self._hwnd, self.bbox)
+        return _grab_window(self._hwnd, self.bbox, fallback_size=self.last_window_size)
 
     # -- Screen capture paths -------------------------------------------------
 
