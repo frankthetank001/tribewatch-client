@@ -349,17 +349,20 @@ def _grab_window(
 ) -> Image.Image | None:
     """Capture a window's client area via PrintWindow.
 
+    Returns ``None`` when the window is minimized. ARK (UE5) stops pumping
+    frames into its swapchain while iconic, so PrintWindow can't draw it
+    even with PW_RENDERFULLCONTENT - it just returns 0. Skip the call
+    entirely so the caller can pause monitoring instead of churning on
+    failed grabs.
+
     Args:
         hwnd: Window handle.
         bbox: Optional [left, top, right, bottom] crop region relative to client area.
-        fallback_size: Last-known ``(width, height)`` of the client area, used
-            when the window is minimized. ``GetClientRect`` returns 0x0 for
-            iconic windows, but PrintWindow can still draw via DWM's cached
-            surface as long as we feed real dimensions - so OCR keeps working
-            while the user is alt-tabbed with ARK minimized.
+        fallback_size: Unused. Kept for ABI stability with callers that still
+            pass last-known client size.
 
     Returns:
-        PIL Image or None on failure.
+        PIL Image, or None on failure / minimized window.
     """
     if not _IS_WIN32:
         return None
@@ -367,17 +370,17 @@ def _grab_window(
     user32 = ctypes.windll.user32  # type: ignore[attr-defined]
     gdi32 = ctypes.windll.gdi32  # type: ignore[attr-defined]
 
+    if user32.IsIconic(hwnd):
+        return None
+
     # 1. Get client area dimensions
     rect = (ctypes.c_long * 4)()
     user32.GetClientRect(hwnd, ctypes.byref(rect))
     width = rect[2]
     height = rect[3]
     if width <= 0 or height <= 0:
-        if user32.IsIconic(hwnd) and fallback_size is not None:
-            width, height = fallback_size
-        else:
-            log.warning("Window client area is empty (%dx%d)", width, height)
-            return None
+        log.warning("Window client area is empty (%dx%d)", width, height)
+        return None
 
     # 2. Get device context
     hdc = user32.GetDC(hwnd)
@@ -484,6 +487,9 @@ class ScreenCapture:
         # GameUserSettings.ini for resolution-change detection because it
         # reflects the actual rendered pixel size.
         self.last_window_size: tuple[int, int] | None = None
+        # Iconic-state latch so we log "minimized" / "restored" once per
+        # transition instead of every cycle.
+        self._iconic: bool = False
 
         # Window capture mode
         if window_title:
@@ -546,6 +552,16 @@ class ScreenCapture:
                 log.warning("Window '%s' not found", self._window_title)
                 return None
             log.info("Window re-found: hwnd=%s", self._hwnd)
+
+        iconic = bool(user32.IsIconic(self._hwnd))
+        if iconic != self._iconic:
+            self._iconic = iconic
+            if iconic:
+                log.info("Window '%s' minimized - capture paused", self._window_title)
+            else:
+                log.info("Window '%s' restored - capture resumed", self._window_title)
+        if iconic:
+            return None
 
         size = get_window_client_size(self._hwnd)
         if size:
