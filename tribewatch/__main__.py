@@ -1620,6 +1620,15 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
                 records = load_recent_records(limit=50, include_images=False)
                 if records and _active_relay:
                     await _active_relay.send_reconnect_history(records)
+                # Push fresh status to the server the instant we (re)connect.
+                # A freshly-registered relay handler has empty cached status
+                # on the server, so without this the dashboard shows the
+                # client as "Stopped" until the next 10s heartbeat tick —
+                # very visible given the periodic proxy-driven reconnects.
+                try:
+                    app._kick_heartbeat()
+                except Exception:
+                    pass
 
             from dataclasses import asdict as _asdict_for_provider
             relay = ServerRelay(
