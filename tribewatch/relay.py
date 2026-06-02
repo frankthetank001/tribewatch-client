@@ -150,7 +150,15 @@ class ServerRelay:
         """Establish WebSocket connection, authenticate, and start listening."""
         assert self._session is not None
         log.info("Connecting to relay server: %s", self._server_url)
-        self._ws = await self._session.ws_connect(self._server_url)
+        # heartbeat=30 makes aiohttp send a WS ping every 30s and close the
+        # connection if no pong comes back. Two reasons: (1) it keeps the
+        # socket warm through the Fly edge proxy, which otherwise silently
+        # recycles long-lived relay connections on a ~10-minute cycle, and
+        # (2) it lets us detect a dead/half-open socket within ~30s and
+        # reconnect cleanly instead of lingering as a zombie the server
+        # still thinks is alive (which froze the dashboard status on stale
+        # "active"/"running" until uvicorn's own ping eventually noticed).
+        self._ws = await self._session.ws_connect(self._server_url, heartbeat=30)
 
         # Authenticate — prefer client_token (Discord OAuth signed token),
         # fall back to legacy auth_token (shared secret)
