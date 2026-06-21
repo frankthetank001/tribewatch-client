@@ -913,54 +913,68 @@ async def _handle_server_change(
             show_action_dialog,
             "TribeWatch \u2014 Server Change Detected",
             (
-                f"Server changed!\n\n"
+                f"You're on a different ARK server now.\n\n"
                 f"Previous: {old_name}\n"
                 f"New: {new_name}\n\n"
-                f"Monitoring is paused until you respond."
+                f"A tribe is tied to its server, so this is a different tribe. "
+                f"Nothing is created on the server until you open the tribe "
+                f"log here. Monitoring is paused until you choose."
             ),
             [
-                ("Accept and re-detect tribe", "accept"),
-                ("Decline (stay paused)", "decline"),
+                ("Monitor new tribe on this server", "monitor"),
+                ("Pause (resume when I return)", "pause"),
             ],
-            "accept",
+            "pause",
         )
 
-        if choice == "accept":
+        if choice == "monitor":
             accepted = True
-            from tribewatch.config import client_config_path
-
-            save_path = client_config_path(config_path)
-            await asyncio.get_event_loop().run_in_executor(
-                None, _discover_and_confirm_tribe_name, cfg, save_path, "client",
-            )
-            app.config.tribe.tribe_name = cfg.tribe.tribe_name
     except Exception:
         log.exception("Server change handler failed")
     finally:
         app._server_change_pending = False
         if accepted:
+            # Adopt the new server, but register NOTHING yet - the tribe on
+            # the new server is only created/attached once its tribe log is
+            # actually read (tribe_info -> resolve). Clearing the saved tribe
+            # name lets the OCR flow pick up the new server's tribe without
+            # firing a tribe-name-change prompt, and _auto_register_server_id
+            # tells the tribe_unknown handler to register it without a second
+            # dialog - the user already opted in here.
             app._server_id = new_id
             app._server_name = new_name
-            # Clear stale tribe info so no events dispatch with old tribe name.
-            # _tribe_cycle will re-populate once the new tribe is detected.
             app._tribe_info = None
+            app._auto_register_server_id = new_id
+            cfg.tribe.tribe_name = ""
+            try:
+                from tribewatch.config import client_config_path, save_config
+                save_config(cfg, client_config_path(config_path), mode="client")
+            except Exception:
+                log.debug("Failed to persist cleared tribe name", exc_info=True)
             app._paused = False
-            # Accepting any change clears the previous decline — if the user
+            # Adopting a change clears the previous decline - if the user
             # later returns to the declined server, prompt again.
             app._declined_server_id = ""
-            log.info("Server change accepted — monitoring resumed (server_id=%s)", new_id)
+            # Persist the newly-adopted server so the next cold start
+            # compares against it instead of re-prompting for this transfer.
+            persist = getattr(app, "_persist_last_server_cb", None)
+            if persist:
+                persist(new_id, new_name)
+            log.info(
+                "Monitoring new tribe on server %s (%s) - awaiting tribe log",
+                new_id, new_name,
+            )
         else:
-            # Remember the declined server_id so the same change isn't
-            # re-detected on every status poll, which previously nagged
-            # the user with the same dialog repeatedly.  The next time
-            # they transfer to a *different* server (including back to
-            # the one being monitored), the prompt fires again.
+            # Stay pinned to the previous server and resume automatically
+            # when the user returns to it (see build_status). Remember the
+            # declined server_id so the same change isn't re-detected on
+            # every status poll; the next transfer to a *different* server
+            # re-fires the prompt.
             app._declined_server_id = new_id
             log.info(
-                "Server change declined — monitoring stays paused "
-                "(server_id=%s; use /resume or transfer to a different "
-                "server to unpause)",
-                new_id,
+                "Server change paused - staying on %s; will resume when you "
+                "return (declined server_id=%s)",
+                old_name, new_id,
             )
 
 
@@ -1061,6 +1075,43 @@ async def _handle_tribe_name_change(
         app._tribe_name_change_pending = False
         app._paused = False
         log.info("Tribe name change handled — monitoring resumed")
+
+
+async def _auto_register_tribe(
+    app: Any, cfg: Any, config_path: Path, msg: dict,
+) -> None:
+    """Register the tribe the user opted into via "Monitor new tribe".
+
+    The server reported ``(detected_name, server_id)`` as unknown. Because
+    the user already chose to monitor a new tribe on this server, claim it
+    directly instead of prompting again. If the tribe already existed the
+    server would have resolved it and never sent ``tribe_unknown``, so
+    reaching here means it is genuinely new.
+    """
+    log = logging.getLogger(__name__)
+    detected = (msg.get("detected_name") or "").strip()
+    server_id = (msg.get("server_id") or "").strip()
+    if not detected or not server_id:
+        log.warning("auto-register: missing detected_name/server_id: %r", msg)
+        return
+    client_token = cfg.server.client_token
+    if not client_token:
+        log.warning("auto-register: no client_token configured — cannot claim tribe")
+        return
+    from tribewatch.config import client_config_path, save_config
+    from tribewatch import server_api
+    try:
+        log.info("auto-register: claiming new tribe %r on %r", detected, server_id)
+        await server_api.claim_tribe(
+            cfg.server.server_url, client_token, name=detected, server_id=server_id,
+        )
+        cfg.tribe.tribe_name = detected
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: save_config(cfg, client_config_path(config_path), mode="client"),
+        )
+    except Exception:
+        log.exception("auto-register: claim failed")
 
 
 async def _handle_tribe_unknown(cfg: Any, config_path: Path, msg: dict) -> None:
@@ -1604,6 +1655,16 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
         # cleans up, then either breaks or loops to rebuild.
         while True:
             async def _on_tribe_unknown(msg: dict) -> None:
+                # If the user just chose "Monitor new tribe" for this server,
+                # register the freshly-read tribe without a second prompt -
+                # they already opted in. Only auto-create when the server_id
+                # matches the one they accepted.
+                auto_sid = getattr(app, "_auto_register_server_id", "")
+                msg_sid = (msg.get("server_id") or "").strip()
+                if auto_sid and msg_sid and msg_sid == auto_sid:
+                    app._auto_register_server_id = ""
+                    await _auto_register_tribe(app, cfg, config_path, msg)
+                    return
                 await _handle_tribe_unknown(cfg, config_path, msg)
 
             async def _on_relay_connect() -> None:
@@ -1679,6 +1740,26 @@ def _cmd_run_client(cfg: object, config_path: Path) -> None:
                 )
 
             app._on_server_change_cb = _on_server_change
+
+            def _persist_last_server(server_id, server_name):
+                # Remember the server we're monitoring so a future cold
+                # start can detect a transfer and prompt (see the
+                # cold-start guard in app.run). No-op when unchanged so we
+                # don't rewrite the toml on every heartbeat.
+                if not server_id:
+                    return
+                if (cfg.tribe.last_server_id == server_id
+                        and cfg.tribe.last_server_name == server_name):
+                    return
+                cfg.tribe.last_server_id = server_id
+                cfg.tribe.last_server_name = server_name
+                try:
+                    from tribewatch.config import client_config_path, save_config
+                    save_config(cfg, client_config_path(config_path), mode="client")
+                except Exception:
+                    log.debug("Failed to persist last server", exc_info=True)
+
+            app._persist_last_server_cb = _persist_last_server
 
             def _on_tribe_name_change(old_name, detected_name):
                 app._paused = True

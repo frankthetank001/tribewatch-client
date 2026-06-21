@@ -178,6 +178,13 @@ class TribeConfig:
     tribe_name: str = ""  # confirmed tribe name (empty = not yet discovered)
     ocr_engine: str = "paddleocr"  # RapidOCR (PaddleOCR models via ONNX, no paddlepaddle needed)
     offline_grace_seconds: float = 60.0  # seconds after tribe window disappears before setting members offline
+    # Last ARK server (id + name) this client confirmed it was monitoring,
+    # persisted across runs. On a cold start, if GameUserSettings reports a
+    # DIFFERENT server than this, the client fires the same server-change
+    # prompt as an in-session transfer instead of silently registering a
+    # brand-new tribe row on the new server. Empty = first run (no prompt).
+    last_server_id: str = ""
+    last_server_name: str = ""
 
 
 @dataclass
