@@ -85,9 +85,15 @@ def _get_epic_install_paths() -> list[Path]:
 def _find_game_user_settings() -> tuple[Path | None, str]:
     """Find the GameUserSettings.ini file across Steam and Epic install paths.
 
+    A player can own ARK on both Steam and Epic and alternate between them;
+    each build keeps its own GameUserSettings.ini. Collect every candidate
+    that exists and return the most recently MODIFIED one, so server-id /
+    resolution detection follows whichever build they last played.
+
     Returns (path, launcher) where launcher is "steam", "epic", or "" if not found.
     """
-    # Check Steam first
+    candidates: list[tuple[Path, str]] = []
+
     for lib_path in get_steam_library_paths():
         ini = (
             lib_path
@@ -101,9 +107,8 @@ def _find_game_user_settings() -> tuple[Path | None, str]:
             / "GameUserSettings.ini"
         )
         if ini.exists():
-            return ini, _LAUNCHER_STEAM
+            candidates.append((ini, _LAUNCHER_STEAM))
 
-    # Check Epic
     for epic_path in _get_epic_install_paths():
         ini = (
             epic_path
@@ -114,9 +119,24 @@ def _find_game_user_settings() -> tuple[Path | None, str]:
             / "GameUserSettings.ini"
         )
         if ini.exists():
-            return ini, _LAUNCHER_EPIC
+            candidates.append((ini, _LAUNCHER_EPIC))
 
-    return None, ""
+    if not candidates:
+        return None, ""
+
+    def _mtime(item: tuple[Path, str]) -> float:
+        try:
+            return item[0].stat().st_mtime
+        except OSError:
+            return 0.0
+
+    best = max(candidates, key=_mtime)
+    if len(candidates) > 1:
+        log.debug(
+            "Multiple GameUserSettings.ini found (%d); using newest: %s (launcher=%s)",
+            len(candidates), best[0], best[1],
+        )
+    return best
 
 
 def detect_launcher() -> str:
