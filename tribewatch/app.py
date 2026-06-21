@@ -983,6 +983,13 @@ class TribeWatchApp:
                         log.info("Server ID detected: %s (%s)", new_id, new_name)
                     self._server_id = new_id
                     self._server_name = new_name
+                    # Persist as the last-known server so a future cold
+                    # start can detect a transfer. The callback no-ops
+                    # when the value is unchanged, so it's cheap to call
+                    # on every heartbeat.
+                    persist = getattr(self, "_persist_last_server_cb", None)
+                    if persist:
+                        persist(new_id, new_name)
                     # If we just returned to the monitored server after
                     # declining a change to a different one, clear the
                     # pause and the decline memo so monitoring resumes
@@ -2787,16 +2794,44 @@ class TribeWatchApp:
                 res_str,
             )
 
-        # Resolve server_id early so events aren't skipped on first cycle
+        # Resolve server_id early so events aren't skipped on first cycle.
+        #
+        # Cold-start server-change guard: if GameUserSettings now reports a
+        # DIFFERENT server than the one we persisted on a previous run, fire
+        # the same server-change prompt as an in-session transfer. Without
+        # this, restarting the client after transferring servers silently
+        # registers a brand-new tribe row on the new server — the in-session
+        # prompt can't fire on a cold start because there's no prior
+        # _server_id to compare against. See _on_server_change_cb.
         try:
             from tribewatch.server_id import get_server_info
             info = get_server_info()
-            if info["server_id"]:
-                self._server_id = info["server_id"]
-                self._server_name = info["server_name"]
-                log.info("Server ID resolved on startup: %s (%s)", self._server_id, self._server_name)
+            new_id = info["server_id"]
+            new_name = info["server_name"]
+            if new_id:
+                last_id = getattr(self.config.tribe, "last_server_id", "")
+                last_name = getattr(self.config.tribe, "last_server_name", "")
+                cb = getattr(self, "_on_server_change_cb", None)
+                if last_id and new_id != last_id and cb:
+                    # Stay on the last-known server until the user decides;
+                    # the change handler adopts the new one on accept (and
+                    # persists it), or leaves us paused on decline.
+                    self._server_id = last_id
+                    self._server_name = last_name
+                    log.info(
+                        "Server changed since last run: %s (%s) -> %s (%s) — prompting",
+                        last_id, last_name, new_id, new_name,
+                    )
+                    cb(last_id, last_name, new_id, new_name)
+                else:
+                    self._server_id = new_id
+                    self._server_name = new_name
+                    log.info("Server ID resolved on startup: %s (%s)", new_id, new_name)
+                    persist = getattr(self, "_persist_last_server_cb", None)
+                    if persist:
+                        persist(new_id, new_name)
         except Exception:
-            log.debug("Early server_id resolution failed, will retry via heartbeat")
+            log.debug("Early server_id resolution failed, will retry via heartbeat", exc_info=True)
 
         parasaur_task = None
         if self._parasaur_capture:
