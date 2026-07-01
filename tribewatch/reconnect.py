@@ -23,8 +23,10 @@ log = logging.getLogger(__name__)
 # Steam app ID for ARK: Survival Ascended
 _ARK_APP_ID = "2399830"
 
-# Epic Games launch URI — catalog namespace:item:artifact for ARK SA
-# Fallback: find and launch the exe directly via _get_epic_install_paths()
+# Legacy hardcoded Epic launch URI (namespace:catalogItemId:appName for ARK SA).
+# Only used as a last resort — Epic reissues catalog IDs per edition/region, so
+# this can fail with "Application Not Owned: DroppedIcicle". The preferred path
+# reads the real IDs from the account's own manifest (see _launch_epic).
 _EPIC_LAUNCH_URI = "com.epicgames.launcher://apps/ark%3A343af302390741e0b69c4b16e580de9b%3ADroppedIcicle?action=launch&silent=true"
 
 # Timeouts (seconds)
@@ -238,29 +240,77 @@ class ReconnectSequence:
     def _launch_game(self) -> None:
         """Launch ARK via the detected launcher (Steam or Epic)."""
         if self._launcher == "epic":
-            log.info("Launching game via Epic Games...")
-            # Try Epic launcher URI first
-            try:
-                subprocess.Popen(
-                    ["cmd", "/c", "start", "", _EPIC_LAUNCH_URI],
-                    shell=False,
-                )
-            except Exception:
-                # Fallback: try launching the exe directly
-                log.warning("Epic launcher URI failed, trying direct exe launch")
-                from tribewatch.server_id import _get_epic_install_paths
-                for epic_path in _get_epic_install_paths():
-                    exe = epic_path / "ShooterGame" / "Binaries" / "Win64" / "ArkAscended.exe"
-                    if exe.exists():
-                        subprocess.Popen([str(exe)], cwd=str(exe.parent))
-                        return
-                log.error("Could not find ARK exe in Epic install paths")
+            self._launch_epic()
         else:
             log.info("Launching game via Steam...")
             subprocess.Popen(
                 ["cmd", "/c", "start", f"steam://run/{_ARK_APP_ID}"],
                 shell=False,
             )
+
+    @staticmethod
+    def _epic_uri(namespace: str, catalog_item_id: str, app_name: str) -> str:
+        """Build an Epic launcher URI from its three artifact identifiers."""
+        from urllib.parse import quote
+        artifact = quote(f"{namespace}:{catalog_item_id}:{app_name}", safe="")
+        return f"com.epicgames.launcher://apps/{artifact}?action=launch&silent=true"
+
+    def _launch_epic(self) -> None:
+        """Launch ARK via Epic Games, preferring the account's own manifest.
+
+        The Epic manifest is the ground truth for both the artifact IDs and the
+        exe path this account owns. A single hardcoded URI breaks for accounts
+        that own a different edition/region — Epic reissues catalog IDs, so the
+        launcher rejects the stale artifact with "Application Not Owned:
+        DroppedIcicle". We therefore try, in order:
+          1. a launch URI built from the installed manifest's real IDs,
+          2. the exe named by that manifest (launched directly),
+          3. the exe found by scanning known Epic install paths,
+          4. the legacy hardcoded URI as a last resort.
+        """
+        from tribewatch.server_id import get_epic_launch_info, _get_epic_install_paths
+
+        info = get_epic_launch_info()
+
+        # 1) Manifest-derived launch URI — correct per-account IDs.
+        if info:
+            uri = self._epic_uri(
+                info["namespace"], info["catalog_item_id"], info["app_name"]
+            )
+            log.info("Launching ARK via Epic manifest URI (app=%s)", info["app_name"])
+            try:
+                subprocess.Popen(["cmd", "/c", "start", "", uri], shell=False)
+                return
+            except Exception:
+                log.warning("Epic manifest URI launch failed, trying direct exe", exc_info=True)
+
+        # 2) Direct exe from the manifest's install location.
+        if info and info.get("install_location"):
+            exe = Path(info["install_location"]) / info.get("launch_executable", "")
+            if exe.exists():
+                log.info("Launching ARK exe directly from manifest: %s", exe)
+                try:
+                    subprocess.Popen([str(exe)], cwd=str(exe.parent))
+                    return
+                except Exception:
+                    log.warning("Direct exe launch (manifest) failed", exc_info=True)
+
+        # 3) Direct exe from scanned Epic install paths.
+        for epic_path in _get_epic_install_paths():
+            exe = epic_path / "ShooterGame" / "Binaries" / "Win64" / "ArkAscended.exe"
+            if exe.exists():
+                log.info("Launching ARK exe from scanned Epic path: %s", exe)
+                try:
+                    subprocess.Popen([str(exe)], cwd=str(exe.parent))
+                    return
+                except Exception:
+                    log.warning("Direct exe launch (scanned) failed", exc_info=True)
+
+        # 4) Last resort: the legacy hardcoded URI (may fail "not owned").
+        log.warning(
+            "No Epic manifest/exe found for ARK — falling back to legacy hardcoded URI"
+        )
+        subprocess.Popen(["cmd", "/c", "start", "", _EPIC_LAUNCH_URI], shell=False)
 
     @staticmethod
     def _is_ark_running(exe_names: tuple[str, ...]) -> bool:

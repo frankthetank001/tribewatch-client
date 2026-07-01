@@ -82,6 +82,75 @@ def _get_epic_install_paths() -> list[Path]:
     return paths
 
 
+def _epic_manifests_dir() -> Path:
+    """Return the Epic Games Launcher manifests directory (may not exist)."""
+    return (
+        Path(os.environ.get("PROGRAMDATA", "C:/ProgramData"))
+        / "Epic" / "EpicGamesLauncher" / "Data" / "Manifests"
+    )
+
+
+def _iter_epic_manifests() -> list[dict]:
+    """Parse every Epic ``*.item`` manifest into a dict. Best-effort, never raises."""
+    manifests_dir = _epic_manifests_dir()
+    if not manifests_dir.exists():
+        return []
+    import json
+    out: list[dict] = []
+    for manifest in manifests_dir.glob("*.item"):
+        try:
+            out.append(json.loads(manifest.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+    return out
+
+
+def _is_ark_manifest(data: dict) -> bool:
+    """Return True if an Epic manifest dict describes ARK: Survival Ascended.
+
+    Matches on install location / mandatory folder (both contain
+    ``ARKSurvivalAscended``) or a "... Survival Ascended" display name.
+    Deliberately does NOT match on ``AppName`` — Epic's app name for ARK SA
+    is a random codename (e.g. "DroppedIcicle") that contains no "ark".
+    """
+    install_loc = str(data.get("InstallLocation") or "").lower().replace(" ", "")
+    folder = str(data.get("MandatoryAppFolderName") or "").lower().replace(" ", "")
+    display = str(data.get("DisplayName") or "").lower()
+    return (
+        "arksurvivalascended" in install_loc
+        or "arksurvivalascended" in folder
+        or ("ark" in display and "ascended" in display)
+    )
+
+
+def get_epic_launch_info() -> dict[str, str] | None:
+    """Read the Epic manifest for ARK: Survival Ascended and return its real
+    launch identifiers, or ``None`` if ARK isn't installed via Epic.
+
+    Returns ``{"namespace", "catalog_item_id", "app_name", "install_location",
+    "launch_executable"}`` — everything needed to build a launch URI or launch
+    the exe directly. These come straight from the account's own installed
+    manifest, so they always match what that Epic account actually owns
+    (a hardcoded URI breaks for other editions/regions — Epic reissues catalog
+    IDs, producing "Application Not Owned" on launch).
+    """
+    for data in _iter_epic_manifests():
+        if not _is_ark_manifest(data):
+            continue
+        namespace = data.get("CatalogNamespace") or data.get("MainGameCatalogNamespace") or ""
+        catalog_item_id = data.get("CatalogItemId") or data.get("MainGameCatalogItemId") or ""
+        app_name = data.get("AppName") or data.get("MainGameAppName") or ""
+        if namespace and catalog_item_id and app_name:
+            return {
+                "namespace": namespace,
+                "catalog_item_id": catalog_item_id,
+                "app_name": app_name,
+                "install_location": str(data.get("InstallLocation") or ""),
+                "launch_executable": str(data.get("LaunchExecutable") or ""),
+            }
+    return None
+
+
 def _find_game_user_settings() -> tuple[Path | None, str]:
     """Find the GameUserSettings.ini file across Steam and Epic install paths.
 
