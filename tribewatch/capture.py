@@ -28,8 +28,31 @@ PW_CLIENTONLY = 1
 PW_RENDERFULLCONTENT = 2
 
 
+# ARK: Survival Ascended's window caption is not stable across game
+# builds: older builds title the window "ArkAscended" (one word), newer
+# builds use "ARK: Survival Ascended (v12.34)". A configured title of
+# "ArkAscended" will not substring-match the spaced caption, and vice
+# versa, so neither a fixed default nor a stored config value can cover
+# both. These two tokens appear in every known ARK caption; if the
+# configured title is clearly the ARK window, we fall back to matching
+# any window whose caption contains both.
+_ARK_TITLE_TOKENS = ("ark", "ascended")
+
+
+def _looks_like_ark_title(title: str) -> bool:
+    """True if *title* is clearly meant to be the ARK: Survival Ascended
+    window (covers both "ArkAscended" and "ARK: Survival Ascended ...")."""
+    t = title.lower()
+    return all(tok in t for tok in _ARK_TITLE_TOKENS)
+
+
 def _find_window_by_title(title: str) -> int | None:
-    """Find a window by title. Tries exact match first, then partial (case-insensitive).
+    """Find a window by title.
+
+    Match order: exact caption, then partial (case-insensitive substring),
+    then - only if the configured title is clearly the ARK window - an
+    ARK-aware token match that tolerates the caption changing between game
+    builds (see ``_ARK_TITLE_TOKENS``).
 
     Returns HWND as int, or None if not found.
     """
@@ -43,24 +66,41 @@ def _find_window_by_title(title: str) -> int | None:
     if hwnd:
         return hwnd
 
-    # Partial match via EnumWindows
-    result: list[int] = []
-    title_lower = title.lower()
-
     WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
 
-    def _enum_cb(hwnd_ptr: int, _lparam: int) -> bool:
-        length = user32.GetWindowTextLengthW(hwnd_ptr)
-        if length > 0:
-            buf = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd_ptr, buf, length + 1)
-            if title_lower in buf.value.lower():
-                result.append(hwnd_ptr)
-                return False  # stop enumeration
-        return True  # continue
+    def _first_matching(predicate) -> int | None:
+        """Return the first top-level window whose caption satisfies *predicate*."""
+        found: list[int] = []
 
-    user32.EnumWindows(WNDENUMPROC(_enum_cb), 0)
-    return result[0] if result else None
+        def _enum_cb(hwnd_ptr: int, _lparam: int) -> bool:
+            length = user32.GetWindowTextLengthW(hwnd_ptr)
+            if length > 0:
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd_ptr, buf, length + 1)
+                if predicate(buf.value.lower()):
+                    found.append(hwnd_ptr)
+                    return False  # stop enumeration
+            return True  # continue
+
+        user32.EnumWindows(WNDENUMPROC(_enum_cb), 0)
+        return found[0] if found else None
+
+    # Partial (substring) match
+    title_lower = title.lower()
+    hwnd = _first_matching(lambda caption: title_lower in caption)
+    if hwnd:
+        return hwnd
+
+    # ARK-aware fallback: caption differs across game builds, so match on
+    # the stable tokens rather than the exact/substring caption.
+    if _looks_like_ark_title(title):
+        hwnd = _first_matching(
+            lambda caption: all(tok in caption for tok in _ARK_TITLE_TOKENS)
+        )
+        if hwnd:
+            return hwnd
+
+    return None
 
 
 def focus_window(title: str) -> bool:

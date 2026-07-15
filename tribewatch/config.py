@@ -112,7 +112,7 @@ class GeneralConfig:
     log_level: str = "INFO"
     state_file: str = "tribewatch_state.json"
     monitor: int = 0  # monitor index for screen capture
-    window_title: str = "ArkAscended"  # window capture by title; empty = full screen capture
+    window_title: str = "ARK: Survival Ascended"  # window capture by title; empty = full screen capture. Matching is case-insensitive and ARK-aware (see capture._find_window_by_title), so older "ArkAscended" captions still resolve.
     calibration_resolution: list[int] = field(default_factory=list)  # [w, h] of the window at calibration time
     calibration_render_resolution: list[int] = field(default_factory=list)  # [w, h] of the game render at calibration time (UE's ResolutionSizeX/Y)
     # Auto-accept new versions on startup without the Y/n consent
